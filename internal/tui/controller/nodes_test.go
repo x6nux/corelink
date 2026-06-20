@@ -282,11 +282,11 @@ func TestNodesTab_RenderDetail(t *testing.T) {
 		client: &tui.RPCClient{},
 		view:   nodesViewDetail,
 		detail: &nodeDetailDTO{
-			ID:       "n1",
-			Name: "host-1",
-			VIP:      "10.0.0.1",
-			Role:     "node",
-			Online:   true,
+			ID:     "n1",
+			Name:   "host-1",
+			VIP:    "10.0.0.1",
+			Role:   "node",
+			Online: true,
 			Ingresses: []ingressDTO{
 				{Host: "1.2.3.4", Port: 51820, Source: "stun", Confidence: 90, NatType: "cone"},
 			},

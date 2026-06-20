@@ -27,7 +27,7 @@ func TestControllerWizardSteps_StepTitles(t *testing.T) {
 
 func TestControllerWizardSteps_FieldCounts(t *testing.T) {
 	steps := ControllerWizardSteps()
-	wantCounts := []int{2, 4, 2, 1}
+	wantCounts := []int{2, 2, 2, 1}
 	for i, want := range wantCounts {
 		if len(steps[i].Fields) != want {
 			t.Errorf("步骤 %d 应有 %d 字段，实际 %d", i+1, want, len(steps[i].Fields))
@@ -60,8 +60,8 @@ func TestControllerWizardSteps_Step2Ports(t *testing.T) {
 	steps := ControllerWizardSteps()
 	step2 := steps[1]
 
-	wantKeys := []string{"GRPCEnrollAddr", "GRPCAddr", "HTTPAddr", "AdminAddr"}
-	wantDefaults := []string{":7443", ":7444", ":8080", "127.0.0.1:8090"}
+	wantKeys := []string{"ListenAddr", "AdminAddr"}
+	wantDefaults := []string{":7443", "127.0.0.1:8090"}
 
 	for i, wantKey := range wantKeys {
 		if step2.Fields[i].Key != wantKey {
@@ -112,9 +112,7 @@ func TestControllerConfigJSON_AllFields(t *testing.T) {
 	vals := map[string]string{
 		"SelfSignedHost": "my.domain.com",
 		"TLSMode":        "acme",
-		"GRPCEnrollAddr": ":9443",
-		"GRPCAddr":       ":9444",
-		"HTTPAddr":       ":9080",
+		"ListenAddr":     ":9443",
 		"AdminAddr":      "0.0.0.0:8090",
 		"AdminUser":      "superadmin",
 		"AdminPassword":  "p@ssw0rd",
@@ -175,9 +173,7 @@ func TestControllerConfigJSON_Defaults(t *testing.T) {
 	defaults := map[string]string{
 		"SelfSignedHost": "localhost",
 		"TLSMode":        "self-signed",
-		"GRPCEnrollAddr": ":7443",
-		"GRPCAddr":       ":7444",
-		"HTTPAddr":       ":8080",
+		"ListenAddr":     ":7443",
 		"AdminAddr":      "127.0.0.1:8090",
 		"AdminUser":      "admin",
 	}
@@ -236,9 +232,7 @@ func TestControllerConfigPreview_AllFields(t *testing.T) {
 	vals := map[string]string{
 		"SelfSignedHost": "example.com",
 		"TLSMode":        "acme",
-		"GRPCEnrollAddr": ":9443",
-		"GRPCAddr":       ":9444",
-		"HTTPAddr":       ":9080",
+		"ListenAddr":     ":9443",
 		"AdminAddr":      "0.0.0.0:8090",
 		"AdminUser":      "root",
 		"AdminPassword":  "secret",
@@ -251,8 +245,6 @@ func TestControllerConfigPreview_AllFields(t *testing.T) {
 		"example.com",
 		"acme",
 		":9443",
-		":9444",
-		":9080",
 		"0.0.0.0:8090",
 		"root",
 		"****", // 密码应被遮盖
@@ -285,8 +277,6 @@ func TestControllerConfigPreview_Defaults(t *testing.T) {
 		"localhost",
 		"self-signed",
 		":7443",
-		":7444",
-		":8080",
 		"127.0.0.1:8090",
 		"admin",
 	}

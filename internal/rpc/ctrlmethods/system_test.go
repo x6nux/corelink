@@ -65,13 +65,13 @@ func TestHandleSystemLogs_InvalidJSON(t *testing.T) {
 func TestHandleConfigStatus_FullFields(t *testing.T) {
 	deps := buildTestDeps(&mockStore{}, nil, nil, nil, nil, nil)
 	deps.Config = &ConfigSummary{
-		DBDSN:      "sqlite:///a.db",
-		ListenAddr: ":9090",
-		AdminAddr:  ":8081",
-		VirtualCIDR:    "10.0.0.0/8",
-		TLSMode:        "tls",
-		CASubject:      "CN=Test",
-		CAHash:         "sha256:fff",
+		DBDSN:       "sqlite:///a.db",
+		ListenAddr:  ":9090",
+		AdminAddr:   ":8081",
+		VirtualCIDR: "10.0.0.0/8",
+		TLSMode:     "tls",
+		CASubject:   "CN=Test",
+		CAHash:      "sha256:fff",
 	}
 	h := handleConfigStatus(deps)
 	result, err := h(nil)

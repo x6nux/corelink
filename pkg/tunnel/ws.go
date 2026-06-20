@@ -28,8 +28,8 @@ type wsListener struct {
 	srv       *http.Server
 	accept    chan net.Conn
 	closed    chan struct{}
-	closeOnce sync.Once                        // 保证 close(closed) 至多执行一次，消除并发 Close 竞态
-	srvCert   atomic.Pointer[tls.Certificate]  // wss 服务端证书（GetCertificate 回调读、setServerCert 写）
+	closeOnce sync.Once                       // 保证 close(closed) 至多执行一次，消除并发 Close 竞态
+	srvCert   atomic.Pointer[tls.Certificate] // wss 服务端证书（GetCertificate 回调读、setServerCert 写）
 }
 
 // setServerCert 注入已知证书（供 wss 钉扎测试拿到确定指纹）。

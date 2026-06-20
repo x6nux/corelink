@@ -1,0 +1,93 @@
+services:
+  controller:
+    image: corelink:test
+    container_name: corelink-controller
+    command: corelink-controller serve -config /etc/corelink/controller.json
+    environment:
+      CORELINK_CA_ENC_KEY: "BylRKeA7otf5NJ7YrZFtrZGNKqclNvkDTSrusBYM4i8="
+    volumes:
+      - ./controller.json:/etc/corelink/controller.json:ro
+      - controller-data:/data
+    ports:
+      - "7443:7443"
+      - "7444:7444"
+      - "8080:8080"
+      - "8090:8090"
+    networks:
+      - corelink
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ss -tlnp | grep -q 7443"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  node1:
+    image: corelink:test
+    container_name: corelink-node1
+    command: /bin/bash /etc/corelink/entrypoint-node.sh
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      NODE_TAG: node1
+      CONTROLLER_HOST: controller
+    volumes:
+      - ./entrypoint-node.sh:/etc/corelink/entrypoint-node.sh:ro
+      - node1-data:/data
+    networks:
+      - corelink
+    depends_on:
+      controller:
+        condition: service_healthy
+
+  node2:
+    image: corelink:test
+    container_name: corelink-node2
+    command: /bin/bash /etc/corelink/entrypoint-node.sh
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      NODE_TAG: node2
+      CONTROLLER_HOST: controller
+    volumes:
+      - ./entrypoint-node.sh:/etc/corelink/entrypoint-node.sh:ro
+      - node2-data:/data
+    networks:
+      - corelink
+    depends_on:
+      controller:
+        condition: service_healthy
+
+  node3:
+    image: corelink:test
+    container_name: corelink-node3
+    command: /bin/bash /etc/corelink/entrypoint-node.sh
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      NODE_TAG: node3
+      CONTROLLER_HOST: controller
+    volumes:
+      - ./entrypoint-node.sh:/etc/corelink/entrypoint-node.sh:ro
+      - node3-data:/data
+    networks:
+      - corelink
+    depends_on:
+      controller:
+        condition: service_healthy
+
+volumes:
+  controller-data:
+  node1-data:
+  node2-data:
+  node3-data:
+
+networks:
+  corelink:
+    driver: bridge

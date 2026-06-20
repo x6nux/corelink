@@ -11,13 +11,13 @@ import (
 )
 
 type configStatusResult struct {
-	DBDSN      string `json:"db_dsn"`
-	ListenAddr string `json:"listen_addr"`
-	AdminAddr  string `json:"admin_addr"`
-	VirtualCIDR    string `json:"virtual_cidr"`
-	TLSMode        string `json:"tls_mode"`
-	CASubject      string `json:"ca_subject"`
-	CAHash         string `json:"ca_hash"`
+	DBDSN       string `json:"db_dsn"`
+	ListenAddr  string `json:"listen_addr"`
+	AdminAddr   string `json:"admin_addr"`
+	VirtualCIDR string `json:"virtual_cidr"`
+	TLSMode     string `json:"tls_mode"`
+	CASubject   string `json:"ca_subject"`
+	CAHash      string `json:"ca_hash"`
 }
 
 // ConfigTab 配置 Tab。

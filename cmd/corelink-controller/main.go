@@ -56,9 +56,7 @@ import (
 	"github.com/x6nux/corelink/internal/controller/configsvc"
 	"github.com/x6nux/corelink/internal/controller/enroll"
 	"github.com/x6nux/corelink/internal/controller/geoipdb"
-	"github.com/x6nux/corelink/internal/nodecore/geoip"
 	"github.com/x6nux/corelink/internal/controller/ingress"
-	"github.com/x6nux/corelink/internal/nodecore/location"
 	"github.com/x6nux/corelink/internal/controller/ipam"
 	"github.com/x6nux/corelink/internal/controller/relayroster"
 	"github.com/x6nux/corelink/internal/controller/server"
@@ -66,6 +64,8 @@ import (
 	"github.com/x6nux/corelink/internal/controller/topoadapter"
 	"github.com/x6nux/corelink/internal/controller/topology"
 	"github.com/x6nux/corelink/internal/controller/topostore"
+	"github.com/x6nux/corelink/internal/nodecore/geoip"
+	"github.com/x6nux/corelink/internal/nodecore/location"
 	"github.com/x6nux/corelink/internal/rpc"
 	"github.com/x6nux/corelink/internal/rpc/ctrlmethods"
 	"github.com/x6nux/corelink/internal/tui"
@@ -204,7 +204,7 @@ func loadConfig(configPath string) (*config.Config, error) {
 	} else {
 		cfg = &config.Config{
 			DBDSN:          "sqlite://corelink.db",
-			ListenAddr: ":7443",
+			ListenAddr:     ":7443",
 			VirtualCIDR:    "100.64.0.0/10",
 			CASubject:      "CoreLink Root CA",
 			TLSMode:        "self-signed",
@@ -569,13 +569,13 @@ func (c *controllerComponents) serve() error {
 		StartTime: time.Now(),
 		Version:   "dev",
 		Config: &ctrlmethods.ConfigSummary{
-			DBDSN:          cfg.DBDSN,
-			ListenAddr: cfg.ListenAddr,
-			AdminAddr:  cfg.ListenAddr,
-			VirtualCIDR:    cfg.VirtualCIDR,
-			TLSMode:        cfg.TLSMode,
-			CASubject:      cfg.CASubject,
-			CAHash:         caHash,
+			DBDSN:       cfg.DBDSN,
+			ListenAddr:  cfg.ListenAddr,
+			AdminAddr:   cfg.ListenAddr,
+			VirtualCIDR: cfg.VirtualCIDR,
+			TLSMode:     cfg.TLSMode,
+			CASubject:   cfg.CASubject,
+			CAHash:      caHash,
 		},
 		LogBuffer: logBuf,
 	})

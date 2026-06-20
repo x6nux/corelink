@@ -15,8 +15,8 @@ import (
 type singBoxDialer struct {
 	cmd       *exec.Cmd
 	cfgPath   string
-	inner     Dialer     // 指向本地 socks 的 SOCKS5 拨号器
-	closeOnce sync.Once  // 保证 Close 仅执行一次，避免重复 Kill/清理
+	inner     Dialer    // 指向本地 socks 的 SOCKS5 拨号器
+	closeOnce sync.Once // 保证 Close 仅执行一次，避免重复 Kill/清理
 }
 
 // newSingBoxDialer 创建 sing-box 子进程 dialer。

@@ -219,4 +219,3 @@ func TestEdgeEventSink_DrivesOnEvent(t *testing.T) {
 	}
 	// 接线连通即可（增量实际效果由 topology 包单测覆盖）。
 }
-

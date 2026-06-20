@@ -45,3 +45,4 @@ web/.vite/
 .vscode/
 .DS_Store
 .claude/worktrees/
+docs/

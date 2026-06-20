@@ -232,8 +232,6 @@ func (s *Service) Renew(ctx context.Context, req *genv1.RenewRequest) (*genv1.En
 
 // ---------- 内部辅助 ----------
 
-
-
 // nodeIDFromPeer 从 context 中提取 mTLS peer 证书，返回 (nodeID, oldSerial, role, error)。
 func nodeIDFromPeer(ctx context.Context) (nodeID, oldSerial, role string, err error) {
 	p, ok := peer.FromContext(ctx)

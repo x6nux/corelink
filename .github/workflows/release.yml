@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 全量 clone（生成 changelog 需要 tag 历史）
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Get version info
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+          echo "build_time=$BUILD_TIME" >> $GITHUB_OUTPUT
+
+          # 找上一个 tag（用于生成 changelog）
+          PREV_TAG=$(git tag --sort=-version:refname | grep '^v' | sed -n '2p')
+          if [ -z "$PREV_TAG" ]; then
+            PREV_TAG=$(git rev-list --max-parents=0 HEAD)
+          fi
+          echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          PREV=${{ steps.version.outputs.prev_tag }}
+
+          {
+            echo "changelog<<CHANGELOG_EOF"
+            echo "## 更新内容"
+            echo ""
+
+            # Changelog 收录规则：
+            #   type(scope): ...  → 收录（小括号）
+            #   type: ...         → 收录（无 scope）
+            #   type[scope]: ...  → 不收录（中括号 = skip）
+            #   style/chore 类型  → 不收录
+            #
+            # 只取 subject 第一行（%s）
+            all=$(git log ${PREV}..HEAD --pretty=format:"- %s" 2>/dev/null || true)
+
+            # 排除中括号 scope + style + chore
+            subjects=$(echo "$all" \
+              | grep -v "^- [a-z]*\[" \
+              | grep -v "^- style[:(]" \
+              | grep -v "^- chore[:(]" \
+              | grep -v "^$" || true)
+
+            # 按 type 分类
+            feat=$(echo "$subjects" | grep "^- feat[:(]" || true)
+            fix=$(echo "$subjects" | grep "^- fix[:(]" || true)
+            perf=$(echo "$subjects" | grep "^- perf[:(]" || true)
+            docs=$(echo "$subjects" | grep "^- docs[:(]" || true)
+            test=$(echo "$subjects" | grep "^- test[:(]" || true)
+            other=$(echo "$subjects" | grep -v "^- feat[:(]" | grep -v "^- fix[:(]" \
+              | grep -v "^- perf[:(]" | grep -v "^- docs[:(]" | grep -v "^- test[:(]" \
+              | grep -v "^$" || true)
+
+            if [ -n "$feat" ]; then
+              echo "### ✨ 新功能"
+              echo "$feat"
+              echo ""
+            fi
+            if [ -n "$fix" ]; then
+              echo "### 🐛 修复"
+              echo "$fix"
+              echo ""
+            fi
+            if [ -n "$perf" ]; then
+              echo "### ⚡ 性能"
+              echo "$perf"
+              echo ""
+            fi
+            if [ -n "$docs" ]; then
+              echo "### 📝 文档"
+              echo "$docs"
+              echo ""
+            fi
+            if [ -n "$test" ]; then
+              echo "### 🧪 测试"
+              echo "$test"
+              echo ""
+            fi
+            if [ -n "$other" ]; then
+              echo "### 🔧 其它"
+              echo "$other"
+              echo ""
+            fi
+
+            echo "---"
+            echo "**完整变更**: [\`${PREV}..${TAG}\`](https://github.com/${{ github.repository }}/compare/${PREV}...${TAG})"
+            echo "CHANGELOG_EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Run tests
+        run: go test -race -count=1 -timeout=300s ./...
+
+      - name: Build binaries
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          COMMIT: ${{ steps.version.outputs.commit }}
+          BUILD_TIME: ${{ steps.version.outputs.build_time }}
+          LDFLAGS_PKG: github.com/x6nux/corelink/internal/tui/install
+        run: |
+          LDFLAGS="-s -w -X ${LDFLAGS_PKG}.Version=${TAG} -X ${LDFLAGS_PKG}.CommitSHA=${COMMIT} -X ${LDFLAGS_PKG}.BuildTime=${BUILD_TIME}"
+
+          targets=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+          )
+
+          mkdir -p dist
+
+          for target in "${targets[@]}"; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            suffix="${os}-${arch}"
+
+            echo "Building ${suffix}..."
+
+            CGO_ENABLED=0 GOOS=${os} GOARCH=${arch} \
+              go build -ldflags "${LDFLAGS}" \
+              -o "dist/corelink-controller-${suffix}" ./cmd/corelink-controller
+
+            CGO_ENABLED=0 GOOS=${os} GOARCH=${arch} \
+              go build -ldflags "${LDFLAGS}" \
+              -o "dist/corelink-node-${suffix}" ./cmd/corelink-node
+          done
+
+          # 生成 checksum
+          cd dist && sha256sum * > checksums.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.version.outputs.tag }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          files: dist/*
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}

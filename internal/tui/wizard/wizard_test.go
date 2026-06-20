@@ -261,9 +261,9 @@ func TestControllerWizardSteps(t *testing.T) {
 	if len(steps[0].Fields) != 2 {
 		t.Fatalf("Step 1 应有 2 字段，实际 %d", len(steps[0].Fields))
 	}
-	// Step 2: 4 字段。
-	if len(steps[1].Fields) != 4 {
-		t.Fatalf("Step 2 应有 4 字段，实际 %d", len(steps[1].Fields))
+	// Step 2: 2 字段（ListenAddr + AdminAddr）。
+	if len(steps[1].Fields) != 2 {
+		t.Fatalf("Step 2 应有 2 字段，实际 %d", len(steps[1].Fields))
 	}
 	// Step 3: 2 字段。
 	if len(steps[2].Fields) != 2 {
@@ -298,9 +298,7 @@ func TestControllerConfigJSON(t *testing.T) {
 	vals := map[string]string{
 		"SelfSignedHost": "example.com",
 		"TLSMode":        "acme",
-		"GRPCEnrollAddr": ":9443",
-		"GRPCAddr":       ":9444",
-		"HTTPAddr":       ":9080",
+		"ListenAddr":     ":9443",
 		"AdminAddr":      "0.0.0.0:8090",
 		"AdminUser":      "root",
 		"AdminPassword":  "secret123",
@@ -318,9 +316,7 @@ func TestControllerConfigJSON(t *testing.T) {
 	checks := map[string]string{
 		"SelfSignedHost": "example.com",
 		"TLSMode":        "acme",
-		"GRPCEnrollAddr": ":9443",
-		"GRPCAddr":       ":9444",
-		"HTTPAddr":       ":9080",
+		"ListenAddr":     ":9443",
 		"AdminAddr":      "0.0.0.0:8090",
 		"AdminUser":      "root",
 		"AdminPassword":  "secret123",

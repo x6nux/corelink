@@ -209,13 +209,13 @@ func TestConfigStatus_NilConfig(t *testing.T) {
 func TestConfigStatus_WithConfig(t *testing.T) {
 	deps := buildTestDeps(&mockStore{}, nil, nil, nil, nil, nil)
 	deps.Config = &ConfigSummary{
-		DBDSN:      "sqlite:///data/ctrl.db",
-		ListenAddr: ":9090",
-		AdminAddr:  ":8081",
-		VirtualCIDR:    "100.64.0.0/10",
-		TLSMode:        "mtls",
-		CASubject:      "CN=CoreLink CA",
-		CAHash:         "sha256:abc",
+		DBDSN:       "sqlite:///data/ctrl.db",
+		ListenAddr:  ":9090",
+		AdminAddr:   ":8081",
+		VirtualCIDR: "100.64.0.0/10",
+		TLSMode:     "mtls",
+		CASubject:   "CN=CoreLink CA",
+		CAHash:      "sha256:abc",
 	}
 	h := handleConfigStatus(deps)
 	result, err := h(nil)

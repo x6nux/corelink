@@ -1,0 +1,13 @@
+{
+  "DBDSN": "sqlite:///data/corelink.db",
+  "GRPCEnrollAddr": "0.0.0.0:7443",
+  "GRPCAddr": "0.0.0.0:7444",
+  "HTTPAddr": "0.0.0.0:8080",
+  "VirtualCIDR": "100.64.0.0/10",
+  "CASubject": "CoreLink Test CA",
+  "TLSMode": "self-signed",
+  "SelfSignedHost": "controller",
+  "AdminAddr": "0.0.0.0:8090",
+  "AdminUser": "admin",
+  "AdminPassword": "testpass123"
+}

@@ -76,9 +76,9 @@ type MTREnumRoute struct {
 
 // MTREnumResult 穷举模式单目标结果。
 type MTREnumResult struct {
-	Source  string         `json:"source"`
-	Target  string         `json:"target"`
-	Routes  []MTREnumRoute `json:"routes"`
+	Source string         `json:"source"`
+	Target string         `json:"target"`
+	Routes []MTREnumRoute `json:"routes"`
 }
 
 type mtrEnumParam struct {

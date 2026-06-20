@@ -142,10 +142,7 @@ func newHarness(t *testing.T) *harness {
 	if err := st.Migrate(); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	auth, err := NewAuthenticatorFromPassword("admin", "s3cret", []byte("0123456789abcdef0123456789abcdef"), time.Hour)
-	if err != nil {
-		t.Fatalf("auth: %v", err)
-	}
+	auth := testAuth(t)
 	notify := &spyNotify{}
 	caSpy := &spyCA{}
 	ipamSpy := &spyIPAM{}
@@ -544,7 +541,7 @@ func TestCreateAndListKeys(t *testing.T) {
 		t.Fatalf("create status = %d; body=%s", rec.Code, rec.Body.String())
 	}
 	created := decode[keyDTO](t, rec)
-	if created.Key == "" || !created.Reusable || created.Tag != "team" || created.ExpiresAt == nil {
+	if created.Key == "" || created.Reusable || created.Tag != "team" || created.ExpiresAt == nil {
 		t.Fatalf("created key wrong: %+v", created)
 	}
 

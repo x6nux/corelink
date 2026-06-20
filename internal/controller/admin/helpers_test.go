@@ -10,6 +10,18 @@ import (
 	"github.com/x6nux/corelink/internal/controller/store"
 )
 
+// testAuth 预计算低 cost bcrypt hash（cost=4），避免每个测试重复 hash 导致 120s+ 总耗时。
+// 密码: "s3cret"
+func testAuth(t *testing.T) *Authenticator {
+	t.Helper()
+	hash := []byte("$2b$04$fWodp96RcEaue5HztmMLRu2tUTwIHaBy5an9oopRFEB7wlIciZ1Ja")
+	a, err := NewAuthenticator("admin", hash, []byte("0123456789abcdef0123456789abcdef"), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
 // ─── writeJSON / writeError 测试 ─────────────────────────────────────────────
 
 func TestWriteJSON(t *testing.T) {
@@ -216,10 +228,7 @@ func TestToNodeDTONilOnlineIface(t *testing.T) {
 	if err := st.Migrate(); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := NewAuthenticatorFromPassword("admin", "s3cret", []byte("0123456789abcdef0123456789abcdef"), time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
+	auth := testAuth(t)
 	srv := NewAdminServer(Deps{Auth: auth, Store: st})
 	dto := srv.toNodeDTO(&store.Node{ID: "x"})
 	if dto.Online {
@@ -312,10 +321,7 @@ func TestHandleGetCANilCA(t *testing.T) {
 	if err := st.Migrate(); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := NewAuthenticatorFromPassword("admin", "s3cret", []byte("0123456789abcdef0123456789abcdef"), time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
+	auth := testAuth(t)
 	// CA 为 nil。
 	srv := NewAdminServer(Deps{Auth: auth, Store: st})
 	tok, _ := auth.Login("admin", "s3cret")
@@ -404,10 +410,7 @@ func TestRecomputeAllNilNotify(t *testing.T) {
 	if err := st.Migrate(); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := NewAuthenticatorFromPassword("admin", "s3cret", []byte("0123456789abcdef0123456789abcdef"), time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
+	auth := testAuth(t)
 	srv := NewAdminServer(Deps{Auth: auth, Store: st})
 	srv.recomputeAll() // 不 panic
 }

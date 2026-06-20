@@ -19,9 +19,9 @@ type fakeTopology struct {
 	setGot *genv1.NodeGeo // 记录 SetNodeGeo 最近一次入参
 }
 
-func (f *fakeTopology) AllNodeGeo() []*genv1.NodeGeo      { return f.geo }
+func (f *fakeTopology) AllNodeGeo() []*genv1.NodeGeo          { return f.geo }
 func (f *fakeTopology) AllRouteReports() []*genv1.RouteReport { return f.routes }
-func (f *fakeTopology) SetNodeGeo(g *genv1.NodeGeo)       { f.setGot = g }
+func (f *fakeTopology) SetNodeGeo(g *genv1.NodeGeo)           { f.setGot = g }
 
 // TestTopologyDTOJSONTags 验证 DTO 的 JSON 键名（前端契约）。
 func TestTopologyDTOJSONTags(t *testing.T) {

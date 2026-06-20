@@ -69,13 +69,13 @@ type IngressIface interface {
 
 // ConfigSummary controller 运行配置摘要（脱敏后用于 TUI 展示）。
 type ConfigSummary struct {
-	DBDSN      string `json:"db_dsn"`
-	ListenAddr string `json:"listen_addr"`
-	AdminAddr  string `json:"admin_addr"`
-	VirtualCIDR    string `json:"virtual_cidr"`
-	TLSMode        string `json:"tls_mode"`
-	CASubject      string `json:"ca_subject"`
-	CAHash         string `json:"ca_hash"`
+	DBDSN       string `json:"db_dsn"`
+	ListenAddr  string `json:"listen_addr"`
+	AdminAddr   string `json:"admin_addr"`
+	VirtualCIDR string `json:"virtual_cidr"`
+	TLSMode     string `json:"tls_mode"`
+	CASubject   string `json:"ca_subject"`
+	CAHash      string `json:"ca_hash"`
 }
 
 // Deps aggregates all dependencies for Controller RPC methods.

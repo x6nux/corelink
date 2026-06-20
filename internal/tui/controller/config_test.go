@@ -56,13 +56,13 @@ func TestConfigTab_ViewWithData(t *testing.T) {
 	tab := &ConfigTab{
 		client: &tui.RPCClient{},
 		data: &configStatusResult{
-			DBDSN:          "file:corelink.db",
-			ListenAddr: ":9090",
-			AdminAddr:      ":9092",
-			VirtualCIDR:    "10.0.0.0/24",
-			TLSMode:        "mtls",
-			CASubject:      "CN=CoreLink CA",
-			CAHash:         "abc123",
+			DBDSN:       "file:corelink.db",
+			ListenAddr:  ":9090",
+			AdminAddr:   ":9092",
+			VirtualCIDR: "10.0.0.0/24",
+			TLSMode:     "mtls",
+			CASubject:   "CN=CoreLink CA",
+			CAHash:      "abc123",
 		},
 	}
 	view := tab.View()

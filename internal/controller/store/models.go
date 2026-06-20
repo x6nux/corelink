@@ -6,13 +6,13 @@ import "time"
 // ID 为顺序数字字符串（"100", "101", ...），兼顾可读性与全网引用一致性。
 type Node struct {
 	ID         string `gorm:"primaryKey"` // 顺序数字 ID（"100", "101"）
-	Name       string `gorm:"index"`                // 用户可设的唯一名称（默认取 hostname）
-	Remark     string                               // 备注
-	Role       string `gorm:"index"`                // "agent" | "relay"
-	Hostname   string                               // 系统主机名（注册时自动采集）
-	WGPubKey   string                               // deprecated
-	VirtualIP  string `gorm:"uniqueIndex"`           // /32
-	User       string `gorm:"index"`                // ACL 用户归属
+	Name       string `gorm:"index"`      // 用户可设的唯一名称（默认取 hostname）
+	Remark     string // 备注
+	Role       string `gorm:"index"` // "agent" | "relay"
+	Hostname   string // 系统主机名（注册时自动采集）
+	WGPubKey   string // deprecated
+	VirtualIP  string `gorm:"uniqueIndex"` // /32
+	User       string `gorm:"index"`       // ACL 用户归属
 	Generation uint64 `gorm:"not null;default:0"`
 	Epoch      uint64 `gorm:"not null;default:0"`
 	// 定位信息（节点上报后持久化，controller 重启时恢复）

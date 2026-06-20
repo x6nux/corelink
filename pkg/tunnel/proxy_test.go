@@ -125,8 +125,8 @@ func TestNewBaseDialer_覆盖所有分支(t *testing.T) {
 		wantErr bool
 	}{
 		{"TCP", &Config{Protocol: TCP}, false},
-		{"TLS_nil_opts", &Config{Protocol: TLS}, true},           // TLS 协议必须提供 TLSOptions
-		{"WSS_nil_opts", &Config{Protocol: WSS}, true},           // WSS 协议必须提供 TLSOptions
+		{"TLS_nil_opts", &Config{Protocol: TLS}, true}, // TLS 协议必须提供 TLSOptions
+		{"WSS_nil_opts", &Config{Protocol: WSS}, true}, // WSS 协议必须提供 TLSOptions
 		{"WS", &Config{Protocol: WS, WSPath: "/ws"}, false},
 		{"GRPC", &Config{Protocol: GRPC}, false},
 		{"unknown", &Config{Protocol: "badproto"}, true},

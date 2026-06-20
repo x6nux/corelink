@@ -100,4 +100,3 @@ func TestQualityEdgeCRUD(t *testing.T) {
 		t.Errorf("QualityEdge 数据错误: rtt=%d loss=%d", got.RTTms, got.LossPermille)
 	}
 }
-
