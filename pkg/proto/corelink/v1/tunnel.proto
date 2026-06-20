@@ -1,0 +1,15 @@
+syntax = "proto3";
+package corelink.v1;
+option go_package = "github.com/x6nux/corelink/pkg/proto/gen;genv1";
+
+// TunnelService 提供面向字节流的 grpc 双向流传输：
+// 两端把任意字节流切片封装在 Chunk 中经一条双向流互传，
+// 上层 streamConn 适配器据此实现 net.Conn 语义（见 pkg/tunnel/grpc.go）。
+service TunnelService {
+  rpc Stream(stream Chunk) returns (stream Chunk);
+}
+
+// Chunk 承载一段字节流分片。
+message Chunk {
+  bytes data = 1;
+}

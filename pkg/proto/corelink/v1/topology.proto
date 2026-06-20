@@ -1,0 +1,50 @@
+syntax = "proto3";
+package corelink.v1;
+option go_package = "github.com/x6nux/corelink/pkg/proto/gen;genv1";
+
+import "ingress.proto";
+import "fib.proto";
+
+// 智能并网：拓扑下发（嵌入 NodeConfig，随 WatchConfig + generation 下发）
+
+// 节点在拓扑中的角色
+enum NodeTopoRole {
+  NODE_TOPO_ROLE_UNSPECIFIED = 0;
+  NODE_TOPO_ROLE_LEAF = 1;          // 叶子节点
+  NODE_TOPO_ROLE_TRANSIT = 2;       // 中转节点
+}
+
+// 邻居引用（含该邻居可用接入点）
+message NeighborRef {
+  string node_id = 1;
+  repeated Ingress ingresses = 2;
+  string fingerprint = 3;  // §4.0 邻居证书 SHA-256 指纹（tunnel.CertFingerprint 格式），mesh 建链 pin
+}
+
+// 一跳：经某节点的某接入点
+message Hop {
+  string node_id = 1;
+  string ingress_id = 2;
+}
+
+// 基线路由（到某目标节点的逐跳路径）
+message Route2 {
+  string dst_node = 1;
+  repeated Hop hops = 2;
+}
+
+// 探测目标（对某节点的若干接入点做主动探测）
+message ProbeTarget {
+  string node_id = 1;
+  repeated string ingress_ids = 2;
+}
+
+// 拓扑分配（下发给单个节点）
+message TopologyAssignment {
+  uint64 version = 1;
+  NodeTopoRole role = 2;
+  repeated NeighborRef neighbors = 3;
+  repeated Route2 baseline_routes = 4;
+  repeated ProbeTarget probe_targets = 5;
+  FIBTable fib = 6;                       // VIP 转发信息库
+}

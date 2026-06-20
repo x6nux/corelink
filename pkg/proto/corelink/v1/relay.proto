@@ -1,0 +1,45 @@
+syntax = "proto3";
+package corelink.v1;
+option go_package = "github.com/x6nux/corelink/pkg/proto/gen;genv1";
+
+import "common.proto";
+
+// relay 相关：节点位置上报（relay→controller）、relay 间 link-state gossip
+service RelayControlService {
+  // relay 上报某节点已接入/离开本 relay（§7.2.3 位置注册）
+  rpc ReportNodeLocation(NodeLocation) returns (ReportAck);
+}
+
+message NodeLocation {
+  string node_id = 1;
+  string relay_id = 2;
+  bool attached = 3;                 // true=接入, false=离开
+  uint32 stream_port = 4;            // relay 隧道监听端口（TCP/WS/gRPC）
+  uint32 udp_port = 5;               // relay UDP 监听端口（0 = 未启用）
+  repeated TunnelProtocol protocols = 6; // 支持的隧道协议
+}
+
+message ReportAck { uint64 version = 1; }
+
+// relay 信封头（§7.1）——数据面封装，定义于此供各端共用
+message Envelope {
+  string src_node = 1;
+  string dst_node = 2;
+  string dst_relay = 3;              // 源 relay 一次性解析写入
+  string session_id = 4;
+  uint32 ttl = 5;                    // 跳数上限，防环
+}
+
+// link-state gossip 链路权重通告（§7.2.2）
+message LinkState {
+  string relay_id = 1;
+  uint64 version = 2;                // 版本号，支撑收敛
+  repeated LinkMetric links = 3;
+}
+
+message LinkMetric {
+  string neighbor_relay_id = 1;
+  uint32 rtt_ms = 2;
+  uint32 loss_permille = 3;          // 千分比
+  uint32 bandwidth_mbps = 4;
+}

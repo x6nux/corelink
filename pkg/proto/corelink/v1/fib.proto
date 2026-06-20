@@ -1,0 +1,24 @@
+syntax = "proto3";
+package corelink.v1;
+option go_package = "github.com/x6nux/corelink/pkg/proto/gen;genv1";
+
+// FIB（转发信息库）— VIP 路由架构的核心数据结构
+
+// 下一跳条目
+message NextHopEntry {
+  string peer_id = 1;       // 下一跳节点 ID
+  uint32 weight = 2;        // ECMP 权重
+  string ingress_id = 3;    // 接入点 ID
+}
+
+// FIB 单条表项（前缀 → 下一跳列表）
+message FIBEntry {
+  string prefix = 1;                  // VIP 前缀（CIDR 格式）
+  repeated NextHopEntry next_hops = 2;
+}
+
+// FIB 完整表（版本化，原子下发）
+message FIBTable {
+  uint64 version = 1;
+  repeated FIBEntry entries = 2;
+}

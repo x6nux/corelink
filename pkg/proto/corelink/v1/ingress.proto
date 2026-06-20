@@ -1,0 +1,149 @@
+syntax = "proto3";
+package corelink.v1;
+option go_package = "github.com/x6nux/corelink/pkg/proto/gen;genv1";
+
+import "common.proto";
+
+// 智能并网：节点接入点（ingress）上报与质量/事件上报服务（§并网）
+
+// 接入点类型
+enum IngressKind {
+  INGRESS_KIND_UNSPECIFIED = 0;
+  INGRESS_KIND_IP_DIRECT = 1;        // 直连 IP
+  INGRESS_KIND_CDN = 2;              // 经 CDN 边缘
+}
+
+// 接入点来源（如何发现的）
+enum IngressSource {
+  INGRESS_SOURCE_UNSPECIFIED = 0;
+  INGRESS_SOURCE_CONFIG = 1;         // 配置静态指定
+  INGRESS_SOURCE_OBSERVED = 2;       // 服务端反射观测
+  INGRESS_SOURCE_STUN = 3;           // STUN 探测
+  INGRESS_SOURCE_NETIF = 4;          // 本地网卡枚举
+  INGRESS_SOURCE_URL = 5;            // 通过 URL/域名解析
+  INGRESS_SOURCE_UPNP = 6;           // 自助打洞(UPnP-IGD/NAT-PMP/PCP) 主动建立的公网入口
+}
+
+// NAT 类型（影响可达性与打洞策略）
+enum NatType {
+  NAT_TYPE_UNKNOWN = 0;
+  NAT_TYPE_OPEN = 1;
+  NAT_TYPE_FULL_CONE = 2;
+  NAT_TYPE_RESTRICTED = 3;
+  NAT_TYPE_PORT_RESTRICTED = 4;
+  NAT_TYPE_SYMMETRIC = 5;
+}
+
+// 单个接入点描述
+message Ingress {
+  string id = 1;
+  IngressKind kind = 2;
+  string host = 3;
+  uint32 port = 4;
+  repeated TunnelProtocol protocols = 5;   // 复用 common.proto 的隧道协议枚举
+  uint32 udp_port = 6;
+  string sni = 7;
+  IngressSource source = 8;
+  uint32 confidence = 9;                    // 置信度（0-100）
+  NatType nat_type = 10;
+}
+
+// 节点上报其全部接入点
+message IngressSet {
+  string node_id = 1;
+  repeated Ingress ingresses = 2;
+}
+
+// 单条边采样（src→dst 经某 ingress 的质量）
+message EdgeSample {
+  string dst_node = 1;
+  string ingress_id = 2;
+  uint32 rtt_ms = 3;
+  uint32 loss_permille = 4;                 // 千分比
+  int64 ts_unix = 5;
+}
+
+// 周期质量上报
+message QualityReport {
+  string src_node = 1;
+  repeated EdgeSample samples = 2;
+}
+
+// 边事件类型
+enum EdgeEventKind {
+  EDGE_EVENT_KIND_UNSPECIFIED = 0;
+  EDGE_EVENT_KIND_DOWN = 1;
+  EDGE_EVENT_KIND_DEGRADED = 2;
+  EDGE_EVENT_KIND_RECOVERED = 3;
+}
+
+// 边事件上报（突变即时上报）
+message EdgeEvent {
+  string src_node = 1;
+  string dst_node = 2;
+  string ingress_id = 3;
+  EdgeEventKind kind = 4;
+  uint32 rtt_ms = 5;
+  uint32 loss_permille = 6;
+}
+
+// 机器规格（CPU/内存/负载）上报
+message MachineSpec {
+  string node_id = 1;
+  uint32 cpus = 2;
+  uint64 memory_mb = 3;
+  uint32 load_permille = 4;   // 1分钟负载×1000/核数
+}
+
+// 节点地理位置上报（综合定位结果）
+message NodeGeo {
+  string node_id = 1;
+  double latitude = 2;        // 最终采用坐标
+  double longitude = 3;
+  string city = 4;
+  string country = 5;         // 国家码
+  string colo_iata = 6;       // 出口机房 IATA 码
+  string accuracy = 7;        // high/low/manual/none
+  double colo_lat = 8;        // 机房原始坐标
+  double colo_lon = 9;
+  double cf_rtt_ms = 10;      // 到 CF 边缘 RTT
+}
+
+// 单条路由（到某目标的选路结果）
+message RouteHop {
+  string dst_node_id = 1;
+  string next_hop_id = 2;     // 实际路由第一跳
+  uint32 rtt_ms = 3;
+  repeated string ranked = 4; // 物理连接候选列表
+}
+
+// 节点路由上报（ProbeRouter 选路结果）
+message RouteReport {
+  string src_node_id = 1;
+  repeated RouteHop routes = 2;
+}
+
+// 通用应答
+message Ack {
+  bool ok = 1;
+}
+
+// 源地址反射请求（可空）
+message ObserveRequest {}
+
+// 服务端反射回的源地址
+message SourceAddr {
+  string host = 1;
+  uint32 port = 2;
+}
+
+// 并网上报服务（agent/relay → controller）
+service IngressService {
+  rpc ReportIngress(IngressSet) returns (Ack);
+  rpc ReportQuality(QualityReport) returns (Ack);
+  rpc ReportEdgeEvent(EdgeEvent) returns (Ack);
+  rpc ObserveSource(ObserveRequest) returns (SourceAddr);   // 源地址反射
+  rpc ReportMachineSpec(MachineSpec) returns (Ack);
+  rpc ReportNodeGeo(NodeGeo) returns (Ack);                 // 节点地理位置
+  rpc ReportRoutes(RouteReport) returns (Ack);              // 节点路由选路结果
+}

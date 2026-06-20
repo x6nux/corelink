@@ -1,0 +1,47 @@
+# Binaries
+/bin/
+deploy/docker/bin/
+/dist/
+*.exe
+*.out
+# 根目录下编译出的可执行文件（go build ./cmd/xxx 默认输出到项目根）
+/controller
+/agent
+/relay
+/corelink
+/corelink-controller
+/corelink-node
+
+# Go
+*.test
+*.prof
+vendor/
+go.work
+go.work.sum
+
+# Frontend
+web/node_modules/
+# web/dist/ is intentionally tracked for go:embed (S6-P4)
+web/.vite/
+
+# corelink-deploy（本地测试网部署工具，不入库）
+/corelink-deploy
+/cmd/corelink-deploy/
+.deploy-servers.json
+
+# Local data / secrets
+*.db
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+*.crt
+*.local
+.env
+.env.*
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+.claude/worktrees/

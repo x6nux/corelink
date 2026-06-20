@@ -1,0 +1,120 @@
+syntax = "proto3";
+package corelink.v1;
+option go_package = "github.com/x6nux/corelink/pkg/proto/gen;genv1";
+
+import "common.proto";
+import "topology.proto";
+
+// 配置下发：通知通道(gRPC 主)推轻量信号；完整配置走 HTTP 拉（此处定义其消息体）
+service ConfigService {
+  // 通知通道：服务端流，推送变更信号
+  rpc WatchConfig(WatchRequest) returns (stream ChangeSignal);
+}
+
+message WatchRequest {
+  uint64 known_generation = 1;       // 本地已知 generation
+  uint64 known_epoch = 2;            // 本地已知 epoch（Steward 故障转移用，阶段1恒0）
+}
+
+// 轻量变更信号（§5.3）
+message ChangeSignal {
+  bool changed = 1;
+  uint64 generation = 2;             // per-node 单调
+  uint64 epoch = 3;                  // 全网控制平面纪元（阶段1恒0）
+}
+
+// 完整配置（HTTP GET 返回体，用 protojson 编码）
+message NodeConfig {
+  uint64 generation = 1;
+  string virtual_ip = 2;
+  string subnet_cidr = 3;
+  repeated Peer peers = 4;
+  repeated Route routes = 5;
+  repeated RelayEndpoint relays = 6;
+  bytes crl_der = 7;                 // 当前吊销列表（§5.2）
+  TopologyAssignment topology = 8;   // 智能并网拓扑分配（随 generation 下发）
+  uint64 epoch = 9;                  // 全网控制平面纪元（阶段1恒0）
+  DNSConfig dns = 10;                           // DNS 代理配置
+  repeated PublishedPrefix published_prefixes = 11; // 授权可达前缀
+  repeated EgressRule egress_rules = 12;        // 出口转发规则（仅下发给出口 node）
+  repeated DiscoveryConfig discovery_configs = 13;  // ARP/邻居发现配置（仅下发给出口 node）
+  SplitTunnelPolicy split_tunnel = 14;  // 智能分流策略
+  map<string, string> node_fingerprints = 15;  // 全量指纹表：nodeID → cert SHA-256（安全层，与拓扑解耦）
+}
+
+message Peer {
+  string node_id = 1;
+  string wg_public_key = 2 [deprecated = true]; // 新数据面不再需要
+  repeated string allowed_ips = 3;   // CIDR 列表（按 ACL 裁剪）
+}
+
+message Route {
+  string dest_cidr = 1;
+  string via_relay_id = 2;           // 经哪个会合 relay
+}
+
+// DNSConfig DNS 代理与拦截配置。
+message DNSConfig {
+  bool enabled = 1;
+  repeated string zones = 2;            // 托管域名区域
+  repeated DNSRecord records = 3;       // 内部解析记录
+  repeated string upstreams = 4;        // 上游 DNS 服务器
+  string intercept_mode = 5;            // local | lan | off
+  string listen_addr = 6;
+  uint32 listen_port = 7;
+  repeated string lan_interfaces = 8;   // LAN 接口（lan 模式）
+  repeated string lan_cidrs = 9;        // LAN 网段（lan 模式）
+}
+
+// DNSRecord 内部 DNS 解析记录。
+message DNSRecord {
+  string fqdn = 1;
+  string target_ip = 2;     // 解析目标 VIP
+  string record_type = 3;   // A | AAAA
+  string owner_node_id = 4;
+}
+
+// PublishedPrefix 已发布的可达前缀（下发给访问方）。
+message PublishedPrefix {
+  string prefix = 1;            // 规范化 CIDR
+  string owner_node_id = 2;
+  string kind = 3;              // direct | static_mapping | discovered_mapping
+}
+
+// EgressRule 出口转发规则（仅下发给出口 node）。
+message EgressRule {
+  string kind = 1;              // direct | static_mapping | discovered_mapping
+  string vip_prefix = 2;        // VIP 侧 CIDR
+  string target_prefix = 3;     // 真实目标 CIDR
+  bool snat = 4;
+  uint32 priority = 5;
+}
+
+// DiscoveryConfig ARP/邻居发现配置（仅下发给出口 node）。
+message DiscoveryConfig {
+  uint32 route_id = 1;
+  string target_cidr = 2;       // 待发现真实网段
+  string vip_pool_cidr = 3;     // VIP 池 CIDR
+  string mode = 4;              // arp
+  uint32 interval_seconds = 5;
+  uint32 stale_after_seconds = 6;
+  uint32 priority = 7;
+}
+
+// SplitTunnelPolicy 智能分流策略（下发给需要分流的节点）。
+message SplitTunnelPolicy {
+  bool enabled = 1;
+  repeated SplitRule rules = 2;
+  repeated string always_direct = 3;
+  string default_action = 4;
+  string default_exit_node_id = 5;
+  string geoip_version = 6;
+  bool geoip_update_request = 7;
+}
+
+// SplitRule 单条分流规则。
+message SplitRule {
+  string match = 1;
+  string action = 2;
+  string exit_node_id = 3;
+}

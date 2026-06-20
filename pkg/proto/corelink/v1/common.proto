@@ -1,0 +1,35 @@
+syntax = "proto3";
+package corelink.v1;
+option go_package = "github.com/x6nux/corelink/pkg/proto/gen;genv1";
+
+// 节点角色
+enum NodeRole {
+  NODE_ROLE_UNSPECIFIED = 0;
+  NODE_ROLE_AGENT = 1;
+  NODE_ROLE_RELAY = 2;
+}
+
+// 隧道协议（数据面 agent↔relay 与 relay↔relay 可选）
+enum TunnelProtocol {
+  TUNNEL_PROTOCOL_UNSPECIFIED = 0;
+  TUNNEL_PROTOCOL_TCP = 1;
+  TUNNEL_PROTOCOL_WS = 2;
+  TUNNEL_PROTOCOL_TLS = 3;
+  TUNNEL_PROTOCOL_WSS = 4;
+  TUNNEL_PROTOCOL_GRPC = 5;
+}
+
+// 网络端点
+message Endpoint {
+  string host = 1;
+  uint32 port = 2;
+}
+
+// relay 接入点描述（下发给 agent）
+message RelayEndpoint {
+  string relay_id = 1;
+  Endpoint udp = 2;                       // UDP 主路端点
+  repeated TunnelProtocol tunnels = 3;    // 支持的隧道协议
+  Endpoint tunnel = 4;                    // 隧道端点（TCP 侧）
+  uint32 priority = 5;                    // 优先级（小=优先）
+}

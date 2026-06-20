@@ -1,0 +1,30 @@
+syntax = "proto3";
+package corelink.v1;
+option go_package = "github.com/x6nux/corelink/pkg/proto/gen;genv1";
+
+import "common.proto";
+
+// 注册服务：节点带 enrollment key 注册，换取签发的节点证书
+service EnrollService {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  rpc Renew(RenewRequest) returns (EnrollResponse);   // 用现证书续签
+}
+
+message EnrollRequest {
+  string enrollment_key = 1;
+  NodeRole role = 2;
+  string wg_public_key = 3 [deprecated = true]; // 节点 WireGuard 公钥（新数据面不再需要）
+  bytes csr_der = 4;                 // 节点身份证书的 CSR（DER）
+  string hostname = 5;
+}
+
+message EnrollResponse {
+  string node_id = 1;
+  string virtual_ip = 2;             // 分配的 /32
+  bytes node_cert_der = 3;           // 签发的节点证书（DER）
+  bytes ca_cert_der = 4;             // CA 证书（用于校验对端）
+}
+
+message RenewRequest {
+  bytes csr_der = 1;                 // mTLS 已认证身份，提交新 CSR
+}
