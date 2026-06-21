@@ -96,6 +96,7 @@ func (e *Engine) Apply(ctx context.Context, policy *genv1.SplitTunnelPolicy, mat
 	if policy.DefaultAction == "proxy" {
 		defaultAct = ActionProxy
 	}
+	slog.Info("splittunnel: 路由器更新", "defaultAction", policy.DefaultAction, "defaultAct", defaultAct, "rules", len(policy.Rules), "forceIPs", len(forceIPs))
 	e.router.Update(policy.Rules, defaultAct, forceIPs, matcher)
 
 	// 设置 IPIP 封装所需的 VIP 信息（使用 vipMu 保护 RMW 操作）
@@ -243,11 +244,7 @@ func buildForceDirectIPs(controllerAddrs, relayAddrs []string) map[netip.Addr]bo
 	if gw := detectGatewayIP(); gw.IsValid() {
 		m[gw] = true
 	}
-	// 系统 DNS
-	for _, dns := range readDNSServers() {
-		if addr, err := netip.ParseAddr(dns); err == nil {
-			m[addr] = true
-		}
-	}
+	// 系统 DNS 不再加入强制直连——分流引擎已在 TUN 层拦截 DNS，
+	// resolv.conf 中的 DNS 地址（如 8.8.8.8）也应参与 GeoIP 分流。
 	return m
 }

@@ -48,6 +48,12 @@ type Config struct {
 	OnRouteSync    func(senderVIP netip.Addr, entry transport.RouteSyncEntry) // 收到 RouteSync 路由同步帧回调
 }
 
+// injectPkt 入站包（从 channel 传递给 TUN 写消费者）。
+type injectPkt struct {
+	buf []byte // 含 tunWriteOffset 前导的完整 buffer（来自 tunBufPool）
+	n   int    // 有效数据长度（tunWriteOffset + pktLen）
+}
+
 // DataPlane 是数据面编排器，管理 TUN 读写循环和网络收发。
 type DataPlane struct {
 	cfg     Config
@@ -88,6 +94,9 @@ type DataPlane struct {
 
 	// tunBufPool 复用入站 TUN 写缓冲区，避免每包分配。
 	tunBufPool sync.Pool
+
+	// injectCh 入站包通道：多个 recv goroutine 写入，单消费者批量 TUN Write。
+	injectCh chan injectPkt
 
 	// closeMu 保护 Close() 与 HandleDNSFrame 等动态 wg.Add(1) 的竞态：
 	// HandleDNSFrame 取 RLock 后检查 ctx.Err() 并 wg.Add(1)，
@@ -144,8 +153,9 @@ func New(cfg Config) (*DataPlane, error) {
 		rankedHops:     make(map[string][]string),
 		loopAvoid:      make(map[string]map[string]time.Time),
 		blockedPeers:   make(map[string]bool),
-		ctx:            ctx,
-		cancel:         cancel,
+		ctx:      ctx,
+		cancel:   cancel,
+		injectCh: make(chan injectPkt, 1024),
 	}
 	// 初始化 TUN 写缓冲池（入站路径复用，避免每包分配）
 	dp.tunBufPool.New = func() any {
@@ -164,9 +174,10 @@ func (dp *DataPlane) Run() error {
 		dp.closeMu.RUnlock()
 		return dp.ctx.Err()
 	}
-	dp.wg.Add(1)
+	dp.wg.Add(2) // TUN Read + TUN Write
 	dp.closeMu.RUnlock()
 	go dp.runTUNRead()
+	go dp.runTUNWrite()
 	// 阻塞直到关闭
 	<-dp.ctx.Done()
 	return nil
@@ -427,17 +438,62 @@ func (dp *DataPlane) isBlocked(nodeID string) bool {
 }
 
 // InjectInbound 从外部注入一个 IP 包到 TUN（入站方向）。
-// 用于接收其他节点发来的帧，注入本地网络栈。
+// 多 goroutine 安全：包被送入 channel 由单消费者批量写入 TUN。
 func (dp *DataPlane) InjectInbound(pkt []byte) {
-	// 给 pkt 前面加 offset 预留空间（TUN 驱动要求）
-	buf := make([]byte, tunWriteOffset+len(pkt))
-	copy(buf[tunWriteOffset:], pkt)
-	bufs := [][]byte{buf}
-	n, err := dp.tunDev.Write(bufs, tunWriteOffset)
-	if err != nil {
-		slog.Warn("dataplane: InjectInbound TUN 写入失败", "err", err, "pktLen", len(pkt))
-	} else {
-		slog.Debug("dataplane: InjectInbound 成功", "written", n, "pktLen", len(pkt))
+	buf := dp.tunBufPool.Get().([]byte)
+	n := tunWriteOffset + len(pkt)
+	copy(buf[tunWriteOffset:n], pkt)
+	select {
+	case dp.injectCh <- injectPkt{buf: buf, n: n}:
+	default:
+		// channel 满时丢弃（背压保护）
+		dp.tunBufPool.Put(buf)
+	}
+}
+
+// runTUNWrite 是入站方向的单消费者：从 channel 读包，积攒后批量写入 TUN。
+func (dp *DataPlane) runTUNWrite() {
+	defer dp.wg.Done()
+	const maxBatch = 128
+	bufs := make([][]byte, 0, maxBatch)
+	poolBufs := make([][]byte, 0, maxBatch) // 跟踪需要归还 pool 的 buffer
+
+	flush := func() {
+		if len(bufs) == 0 {
+			return
+		}
+		if _, err := dp.tunDev.Write(bufs, tunWriteOffset); err != nil {
+			slog.Warn("dataplane: batch TUN Write 失败", "err", err, "count", len(bufs))
+		}
+		for _, b := range poolBufs {
+			dp.tunBufPool.Put(b)
+		}
+		bufs = bufs[:0]
+		poolBufs = poolBufs[:0]
+	}
+
+	for {
+		// 阻塞等第一个包
+		select {
+		case <-dp.ctx.Done():
+			flush()
+			return
+		case p := <-dp.injectCh:
+			bufs = append(bufs, p.buf[:p.n])
+			poolBufs = append(poolBufs, p.buf)
+		}
+		// 非阻塞地尽量多收几个包
+		for len(bufs) < maxBatch {
+			select {
+			case p := <-dp.injectCh:
+				bufs = append(bufs, p.buf[:p.n])
+				poolBufs = append(poolBufs, p.buf)
+			default:
+				goto doFlush
+			}
+		}
+	doFlush:
+		flush()
 	}
 }
 
@@ -560,6 +616,7 @@ func (dp *DataPlane) runTUNRead() {
 	}
 
 	slog.Info("dataplane: TUN 读循环已启动", "batchSize", batchSize)
+	tunPktCount := 0
 	for {
 		// 使用 tunWriteOffset 作为 offset 参数，确保各平台驱动安全读取
 		n, err := dp.tunDev.Read(bufs, sizes, tunWriteOffset)
@@ -575,26 +632,54 @@ func (dp *DataPlane) runTUNRead() {
 			}
 			continue
 		}
-		slog.Debug("dataplane: TUN 读到包", "n", n, "size0", sizes[0])
+		tunPktCount += n
+		if tunPktCount <= 3 || tunPktCount%1000 == 0 {
+			slog.Info("dataplane: TUN 读到包", "n", n, "size0", sizes[0], "total", tunPktCount)
+		}
 
+		// batch 开始前快照低频变化的查找表（避免每包 RLock）
+		dp.blockedPeersMu.RLock()
+		blockedSnap := dp.blockedPeers
+		dp.blockedPeersMu.RUnlock()
+		dp.rankedHopsMu.RLock()
+		rankedSnap := dp.rankedHops
+		dp.rankedHopsMu.RUnlock()
+		reachableSnap := dp.pool.ReachableHops()
+
+		// batch 路径：收集已加锁的 framer，批量写 + 一次 flush + 解锁
+		locked := make(map[*transport.Framer]struct{}, 4)
 		for i := range n {
 			if sizes[i] == 0 {
 				continue
 			}
-			// 跳过前导 offset，提取真实 IP 包数据
 			pkt := bufs[i][tunWriteOffset : tunWriteOffset+sizes[i]]
-			dp.processOutbound(pkt)
+			dp.processOutboundBatch(pkt, locked, blockedSnap, rankedSnap, reachableSnap)
+		}
+		// 批量 flush + 解锁
+		for f := range locked {
+			_ = f.FlushBatch()
+			f.UnlockWrite()
 		}
 	}
 }
 
-// processOutbound 处理一个出站 IP 包：
-// parsePacketToContext → isDNSHijack → FlowTracker → DPI.InspectCtx → RouteCtx → 发送。
+// processOutbound 处理单个出站 IP 包（无 batch flush）。
 func (dp *DataPlane) processOutbound(pkt []byte) {
+	dp.processOutboundBatch(pkt, nil, nil, nil, nil)
+}
+
+// processOutboundBatch 处理一个出站 IP 包，touched 非 nil 时记录写过的 framer 供批量 flush。
+// blockedSnap/rankedSnap/reachableSnap 为 batch 开始前的快照，避免每包加锁查找。
+func (dp *DataPlane) processOutboundBatch(pkt []byte, touched map[*transport.Framer]struct{}, blockedSnap map[string]bool, rankedSnap map[string][]string, reachableSnap []string) {
 	// 0. 解析包头，构建 InboundContext（五元组 + 协议版本）
 	ctx := dp.parsePacketToContext(pkt)
 
-	slog.Debug("dataplane: processOutbound", "dst", ctx.Destination, "src", ctx.Source, "net", ctx.Network, "len", len(pkt))
+	isIPIP := len(pkt) > 9 && pkt[9] == 253
+	if isIPIP {
+		slog.Info("dataplane: processOutbound proto=253 (IPIP封装)", "dst", ctx.Destination, "src", ctx.Source, "len", len(pkt))
+	} else {
+		slog.Debug("dataplane: processOutbound", "dst", ctx.Destination, "src", ctx.Source, "net", ctx.Network, "len", len(pkt))
+	}
 
 	// 0.5 DNS 劫持检测：命中则交由 handleDNSHijack 处理，不进入正常路由
 	if dp.isDNSHijack(pkt, ctx) {
@@ -631,8 +716,11 @@ func (dp *DataPlane) processOutbound(pkt []byte) {
 		targetHop = ctx.NextHop
 	}
 	if targetHop == "" {
-		slog.Warn("dataplane: 无路由", "dst", ctx.Destination.Addr())
+		slog.Warn("dataplane: 无路由", "dst", ctx.Destination.Addr(), "ipip", isIPIP)
 		return
+	}
+	if isIPIP {
+		slog.Info("dataplane: IPIP 路由决策", "dst", ctx.Destination.Addr(), "hop", targetHop[:min(8, len(targetHop))], "candidates", len(dp.getRankedHops(targetHop)), "reachable", len(dp.pool.ReachableHops()))
 	}
 	// 3.5 大流路由切换：累积 > 1MB 的流走加权最优路由（throughput×0.6+latency×0.4）
 	if flow.BytesTotal() > 1<<20 {
@@ -661,32 +749,54 @@ func (dp *DataPlane) processOutbound(pkt []byte) {
 	}
 
 	// 构建候选 hop 列表（MTR 质量排序优先，第一个能发通就返回）
-	candidates := dp.getRankedHops(targetHop)
+	var candidates []string
+	if rankedSnap != nil {
+		candidates = rankedSnap[targetHop]
+	} else {
+		candidates = dp.getRankedHops(targetHop)
+	}
 	if len(candidates) == 0 {
-		// 无 MTR 数据：目标直连 + 所有可达 hop
 		candidates = append(candidates, targetHop)
 	}
-	// 补充 MTR 列表未覆盖的可达 hop（兜底）
-	for _, h := range dp.pool.ReachableHops() {
-		dup := false
-		for _, c := range candidates {
-			if c == h {
-				dup = true
-				break
-			}
-		}
-		if !dup {
+	// 补充可达 hop 兜底
+	reachable := reachableSnap
+	if reachable == nil {
+		reachable = dp.pool.ReachableHops()
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, c := range candidates {
+		seen[c] = struct{}{}
+	}
+	for _, h := range reachable {
+		if _, ok := seen[h]; !ok {
 			candidates = append(candidates, h)
+			seen[h] = struct{}{}
 		}
 	}
 
+	blocked := blockedSnap
 	for _, hop := range candidates {
-		if dp.isBlocked(hop) || dp.isLoopAvoided(targetHop, hop) {
+		isHopBlocked := false
+		if blocked != nil {
+			isHopBlocked = blocked[hop]
+		} else {
+			isHopBlocked = dp.isBlocked(hop)
+		}
+		if isHopBlocked || dp.isLoopAvoided(targetHop, hop) {
 			continue
 		}
 		// 先试 peerFramer（入站连接复用，零拷贝）
 		if pf := dp.GetPeerFramer(hop); pf != nil {
-			if fErr := pf.WritePacket(dstVIP, dp.cfg.SelfRelayIdx, dp.ttl, pkt); fErr == nil {
+			if touched != nil {
+				// batch 路径：首次触及时加锁，后续写不再加锁
+				if _, ok := touched[pf]; !ok {
+					pf.LockWrite()
+					touched[pf] = struct{}{}
+				}
+				if fErr := pf.WritePacketBatch(dstVIP, dp.cfg.SelfRelayIdx, dp.ttl, pkt); fErr == nil {
+					return
+				}
+			} else if fErr := pf.WritePacket(dstVIP, dp.cfg.SelfRelayIdx, dp.ttl, pkt); fErr == nil {
 				return
 			}
 		}
@@ -703,7 +813,17 @@ func (dp *DataPlane) processOutbound(pkt []byte) {
 			continue
 		}
 		slog.Debug("dataplane: 发送帧", "dst", dstVIP, "hop", hop, "addr", conn.Addr)
-		if wErr := conn.Framer.WritePacket(dstVIP, dp.cfg.SelfRelayIdx, dp.ttl, pkt); wErr != nil {
+		var wErr error
+		if touched != nil {
+			if _, ok := touched[conn.Framer]; !ok {
+				conn.Framer.LockWrite()
+				touched[conn.Framer] = struct{}{}
+			}
+			wErr = conn.Framer.WritePacketBatch(dstVIP, dp.cfg.SelfRelayIdx, dp.ttl, pkt)
+		} else {
+			wErr = conn.Framer.WritePacket(dstVIP, dp.cfg.SelfRelayIdx, dp.ttl, pkt)
+		}
+		if wErr != nil {
 			conn.Close()
 			dp.pool.Release(conn)
 			continue
@@ -711,7 +831,7 @@ func (dp *DataPlane) processOutbound(pkt []byte) {
 		dp.pool.Release(conn)
 		return
 	}
-	slog.Debug("dataplane: 无可用 hop，丢弃", "dst", dstVIP)
+	slog.Warn("dataplane: 无可用 hop，丢弃", "dst", dstVIP, "ipip", isIPIP, "candidateCount", len(candidates))
 }
 
 // parsePacketToContext 解析 IPv4 包头，构造 InboundContext（五元组 + 网络层信息）。
@@ -878,7 +998,7 @@ func (dp *DataPlane) HandleProbeFrame(nodeID string, frameDstVIP netip.Addr, sel
 		return
 	}
 
-	slog.Info("dataplane: 收到 Probe 帧",
+	slog.Debug("dataplane: 收到 Probe 帧",
 		"from", nodeID[:min(8, len(nodeID))],
 		"frameDst", frameDstVIP,
 		"self", selfVIP,
@@ -891,7 +1011,7 @@ func (dp *DataPlane) HandleProbeFrame(nodeID string, frameDstVIP netip.Addr, sel
 	// ─── Relay 透明转发：帧头 DstVIP 不是本机 → 转发到 DstVIP ───
 	// 适用于所有帧类型（request/reply/auto/trace），统一判断
 	if frameDstVIP != selfVIP && frameDstVIP.IsValid() {
-		slog.Info("dataplane: Probe relay 转发", "target", frameDstVIP, "self", selfVIP)
+		slog.Debug("dataplane: Probe relay 转发", "target", frameDstVIP, "self", selfVIP)
 		dp.sendProbeFrame(probe, frameDstVIP, false)
 		return
 	}
@@ -992,12 +1112,12 @@ func (dp *DataPlane) sendProbeFrame(probe *transport.ProbeFrame, targetVIP netip
 		return
 	}
 
-	slog.Info("dataplane: Probe 发送", "targetVIP", targetVIP, "hop", targetHop[:min(8, len(targetHop))], "isReply", probe.IsReply, "hopIdx", probe.HopIndex)
+	slog.Debug("dataplane: Probe 发送", "targetVIP", targetVIP, "hop", targetHop[:min(8, len(targetHop))], "isReply", probe.IsReply, "hopIdx", probe.HopIndex)
 
 	// 优先 peer framer（直连入站连接）
 	if pf := dp.GetPeerFramer(targetHop); pf != nil {
 		if err := pf.WriteProbe(probe, targetVIP); err == nil {
-			slog.Info("dataplane: Probe 通过 peerFramer 发送", "hop", targetHop[:min(8, len(targetHop))])
+			slog.Debug("dataplane: Probe 通过 peerFramer 发送", "hop", targetHop[:min(8, len(targetHop))])
 			return
 		}
 		slog.Warn("dataplane: Probe peerFramer 写失败", "hop", targetHop[:min(8, len(targetHop))])
@@ -1023,7 +1143,7 @@ func (dp *DataPlane) sendProbeFrame(probe *transport.ProbeFrame, targetVIP netip
 			slog.Warn("dataplane: Probe 无可达 hop", "targetVIP", targetVIP)
 			return
 		}
-		slog.Info("dataplane: Probe 经中继发送", "target", targetHop[:min(8, len(targetHop))], "relay", sendHop[:min(8, len(sendHop))])
+		slog.Debug("dataplane: Probe 经中继发送", "target", targetHop[:min(8, len(targetHop))], "relay", sendHop[:min(8, len(sendHop))])
 	}
 
 	conn, err := dp.pool.Acquire(sendHop)
@@ -1085,7 +1205,7 @@ type ProbeResult struct {
 // 一个 Probe 包 → 每个中间/终点节点各回一个 reply → 返回 per-hop RTT。
 // route 为预存路由的 VIP 列表（不含自身），autoReply 控制回包路由模式，timeout 为等待超时。
 func (dp *DataPlane) SendProbeAll(selfVIP netip.Addr, route []netip.Addr, autoReply bool, timeout time.Duration) ([]ProbeResult, error) {
-	slog.Info("dataplane: SendProbeAll 开始", "selfVIP", selfVIP, "hops", len(route), "autoReply", autoReply, "firstHop", route[0])
+	slog.Debug("dataplane: SendProbeAll 开始", "selfVIP", selfVIP, "hops", len(route), "autoReply", autoReply, "firstHop", route[0])
 	if len(route) == 0 {
 		return nil, fmt.Errorf("dataplane: Probe 路由为空")
 	}

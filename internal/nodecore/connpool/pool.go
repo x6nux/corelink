@@ -57,6 +57,12 @@ type Pool struct {
 	nextID     atomic.Uint64
 	totalConns atomic.Int32 // 全局活跃出站连接数
 
+	// reachableCache 缓存 ReachableHops 结果，连接变化时原子递增 version 触发刷新。
+	reachableVersion atomic.Uint64
+	reachableMu      sync.Mutex
+	reachableCached  []string
+	reachableCacheV  uint64
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -182,8 +188,17 @@ func (p *Pool) IsReachable(hop string) bool {
 
 // ReachableHops 返回所有可达 hop 的列表。
 func (p *Pool) ReachableHops() []string {
+	v := p.reachableVersion.Load()
+	p.reachableMu.Lock()
+	if p.reachableCacheV == v && p.reachableCached != nil {
+		cached := p.reachableCached
+		p.reachableMu.Unlock()
+		return cached
+	}
+	p.reachableMu.Unlock()
+
+	// 缓存失效，重新扫描
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 	var hops []string
 	for hop, g := range p.groups {
 		g.mu.Lock()
@@ -195,7 +210,18 @@ func (p *Pool) ReachableHops() []string {
 		}
 		g.mu.Unlock()
 	}
+	p.mu.RUnlock()
+
+	p.reachableMu.Lock()
+	p.reachableCached = hops
+	p.reachableCacheV = v
+	p.reachableMu.Unlock()
 	return hops
+}
+
+// InvalidateReachableCache 连接变化时调用，标记缓存需刷新。
+func (p *Pool) InvalidateReachableCache() {
+	p.reachableVersion.Add(1)
 }
 
 // Release 释放连接上的一条流（递减 FlowCount）。
@@ -332,6 +358,7 @@ func (p *Pool) Update(hops map[string]HopInfo) {
 	slog.Info("connpool: Update 完成", "lan", len(lanHops), "wan", len(wanHops),
 		"wanActive", min(wanCount, maxWAN), "lazy", max(0, len(wanHops)-maxWAN),
 		"totalConns", p.totalConns.Load())
+	p.InvalidateReachableCache()
 }
 
 // ConnCount 返回指定下一跳的当前连接数。
@@ -435,6 +462,7 @@ func (p *Pool) dialConn(info HopInfo, nextHop string) (*Conn, error) {
 			p.reach.MarkReachable(addr)
 			dialAddr = addr
 			slog.Info("connpool: 拨号成功", "addr", addr, "hop", nextHop[:min(8, len(nextHop))])
+			p.InvalidateReachableCache()
 			break
 		}
 		if nc == nil && lastErr != nil {

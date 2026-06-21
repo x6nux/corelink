@@ -949,13 +949,6 @@ func (a *realAssembler) setupNodeCore(firstCfg *genv1.NodeConfig) error {
 	// 启动前清理：杀残留进程 + 删遗留 TUN 接口
 	cleanupBeforeStart(a.cfg.TUNName)
 
-	// 统一初始化内核参数（IP 转发、ICMP Redirect 禁用、rp_filter 等）
-	tunName := a.cfg.TUNName
-	if idx := strings.Index(tunName, "%"); idx >= 0 {
-		tunName = tunName[:idx] + "0"
-	}
-	initSysctl(tunName)
-
 	// 从配置解析 MTU，支持预设档位 1400/1500/9000/65535，默认 1400
 	mtu := agentconfig.ResolveMTU(a.cfg.TUNMtu)
 
@@ -963,6 +956,15 @@ func (a *realAssembler) setupNodeCore(firstCfg *genv1.NodeConfig) error {
 	if err != nil {
 		return fmt.Errorf("创建 TUN: %w", err)
 	}
+
+	// 统一初始化内核参数（IP 转发、ICMP Redirect 禁用、rp_filter 等）。
+	// 必须在 TUN 创建之后执行——接口不存在时设置的 per-interface sysctl 无效，
+	// 接口创建后会使用默认 rp_filter=2（strict），导致中继转发包被丢弃。
+	tunName := a.cfg.TUNName
+	if idx := strings.Index(tunName, "%"); idx >= 0 {
+		tunName = tunName[:idx] + "0"
+	}
+	initSysctl(tunName)
 
 	// 分流引擎套在 TUN 和 DataPlane 之间——拦截出站流量做 direct/proxy 分流
 	physIfce := splittunnel.DetectPhysicalInterface()
@@ -1286,25 +1288,50 @@ func (a *realAssembler) setupNodeCore(firstCfg *genv1.NodeConfig) error {
 		Addr:    ":7447",
 		TLSConf: srvTLSConf,
 		OnDNS: func(srcVIP netip.Addr, dnsPayload []byte, replyFramer *transport.Framer) {
-			// 出口节点处理 DNS 帧：转发到 8.8.8.8 解析后回传
-			dpInst.HandleDNSFrame(srcVIP, dnsPayload, replyFramer)
+			// 通过 a.dp 间接引用 DataPlane（角色切换重建后仍指向当前实例）
+			a.mu.Lock()
+			dp := a.dp
+			a.mu.Unlock()
+			if dp != nil {
+				dp.HandleDNSFrame(srcVIP, dnsPayload, replyFramer)
+			}
 		},
 		// Probe 帧接线：路径探测 → 逐跳转发或终点回复
 		OnProbe: func(nodeID string, sourceVIP netip.Addr, payload []byte) {
-			myVIP, _ := netip.ParseAddr(selfVIP)
-			dpInst.HandleProbeFrame(nodeID, sourceVIP, myVIP, payload)
+			a.mu.Lock()
+			dp := a.dp
+			a.mu.Unlock()
+			if dp != nil {
+				myVIP, _ := netip.ParseAddr(selfVIP)
+				dp.HandleProbeFrame(nodeID, sourceVIP, myVIP, payload)
+			}
 		},
 		OnPeerConnect: func(nodeID string, f *transport.Framer) {
-			dpInst.RegisterPeerFramer(nodeID, f)
+			a.mu.Lock()
+			dp := a.dp
+			a.mu.Unlock()
+			if dp != nil {
+				dp.RegisterPeerFramer(nodeID, f)
+			}
 		},
 		OnPeerDisconnect: func(nodeID string, f *transport.Framer) {
-			dpInst.UnregisterPeerFramer(nodeID, f)
+			a.mu.Lock()
+			dp := a.dp
+			a.mu.Unlock()
+			if dp != nil {
+				dp.UnregisterPeerFramer(nodeID, f)
+			}
 		},
 		OnFrame: func(srcNodeID string, dstVIP netip.Addr, dstRelay uint16, ttl uint8, payload []byte) {
 			dstStr := dstVIP.String()
 			// 本地投递：DstVIP 是本机 VIP → 注入 TUN
 			if dstStr == selfVIP {
-				dpInst.InjectInbound(payload)
+				a.mu.Lock()
+				dp := a.dp
+				a.mu.Unlock()
+				if dp != nil {
+					dp.InjectInbound(payload)
+				}
 				return
 			}
 			// 中继转发：DstVIP 不是本机 → 通过 rankedHops 按质量排序转发
@@ -1325,8 +1352,11 @@ func (a *realAssembler) setupNodeCore(firstCfg *genv1.NodeConfig) error {
 				// 标记发送者为环路回避节点
 				key := flowtrack.FlowKey{DstIP: dstVIP}
 				decision := router.Route(key, dpi.Result{})
-				if decision.NextHop != "" {
-					dpInst.MarkLoopAvoid(decision.NextHop, srcNodeID)
+				a.mu.Lock()
+				dpLoop := a.dp
+				a.mu.Unlock()
+				if decision.NextHop != "" && dpLoop != nil {
+					dpLoop.MarkLoopAvoid(decision.NextHop, srcNodeID)
 				}
 				a.mu.Lock()
 				pr := a.probeRouter
@@ -1337,7 +1367,12 @@ func (a *realAssembler) setupNodeCore(firstCfg *genv1.NodeConfig) error {
 				return // TTL 已极低，不再转发此包
 			}
 			// 用 RelayForward 按 rankedHops 排序尝试，自动跳过 srcNodeID 和环路回避表
-			dpInst.RelayForward(srcNodeID, dstVIP, dstRelay, ttl, payload)
+			a.mu.Lock()
+			dpRelay := a.dp
+			a.mu.Unlock()
+			if dpRelay != nil {
+				dpRelay.RelayForward(srcNodeID, dstVIP, dstRelay, ttl, payload)
+			}
 		},
 	})
 	if err != nil {

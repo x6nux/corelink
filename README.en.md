@@ -4,7 +4,7 @@
 
 > A self-organizing overlay VPN / mesh networking system in Go — with intelligent topology orchestration and control-plane self-healing.
 
-CoreLink stitches arbitrarily distributed nodes into one encrypted virtual private network (mesh), much like [Tailscale](https://tailscale.com/) / [ZeroTier](https://www.zerotier.com/). Nodes auto-enroll, receive virtual IPs, and self-organize based on real link quality. The data plane is WireGuard, with NAT traversal, relay forwarding, and multi-hop routing — and when the controller goes down, TRANSIT nodes elect a Steward to keep the network running.
+CoreLink stitches arbitrarily distributed nodes into one encrypted virtual private network (mesh), much like [Tailscale](https://tailscale.com/) / [ZeroTier](https://www.zerotier.com/). Nodes auto-enroll, receive virtual IPs, and self-organize based on real link quality. The custom data plane uses TLS-framed transport achieving **98% wire speed** (983 Mbps on 1 Gbps), with NAT traversal, relay forwarding, multi-hop routing, and GeoIP-aware split tunneling — and when the controller goes down, TRANSIT nodes elect a Steward to keep the network running.
 
 ```text
                  ┌────────────────────────────────────────────┐
@@ -19,7 +19,7 @@ CoreLink stitches arbitrarily distributed nodes into one encrypted virtual priva
   │  Node A  │◄── mesh ────►│  Node B  │◄── mesh ────►│  Node C  │
   │ (TRANSIT)│   interconn/ │ (TRANSIT)│              │  (LEAF)  │
   └────┬─────┘    relay      └────┬─────┘              └────┬─────┘
-       │ WireGuard data plane     │                         │
+       │ Custom data plane (TLS)  │                         │
        └────────── 100.64.0.0/10 virtual subnet (VIP passthrough) ──┘
 ```
 
@@ -44,14 +44,15 @@ CoreLink stitches arbitrarily distributed nodes into one encrypted virtual priva
 
 - **Zero-touch networking** — nodes auto-enroll and receive a virtual IP; no manual IP/route configuration.
 - **Intelligent topology orchestration** — the `TopoService` "topology brain" recomputes periodically and on events, assigning LEAF / TRANSIT roles and computing K-paths + FIB tables based on real link quality (RTT / loss).
-- **WireGuard data plane** — an embedded `wireguard-go` fork with a custom `conn.Bind` that routes WG traffic through relays or VIP passthrough; multi-Bind connects to several relays at once.
-- **VIP passthrough routing** — migrated away from envelope framing to direct VIP passthrough: Bind zero-copy `DirectSend` into the interconnect, with FIB tables (ECMP / DAG) for multi-hop routing.
+- **High-performance custom data plane** — a purpose-built TLS framing protocol (4B length-prefix + VIP routing header + payload) with bufio batch writes and a channel-based single-consumer TUN writer; benchmarked at **98% wire speed** (983 Mbps on 1 Gbps) with only 30% CPU usage.
+- **Autonomous probe-based routing** — nodes run periodic L1 quality probes (TCP RTT / LinkState FSM / multi-relay 3D probing); ProbeRouter scores paths by throughput×0.6 + latency×0.4 and auto-selects the optimal route.
+- **VIP passthrough routing** — FIB tables (ECMP / DAG) for multi-hop routing; relay forwarding via kernel ip_forward is fully transparent.
 - **Steward self-healing** — TRANSIT nodes run a decision layer that probes the controller, elect a new Steward over the mesh when it's unreachable, and spin up a degraded control plane (Tier-A service); control is handed back automatically on recovery.
 - **3-channel config sync** — gRPC server stream → WebSocket → HTTP polling, with automatic failover; a monotonic `(epoch, generation)` version ensures nodes only ever accept newer configs.
 - **NAT traversal** — built-in STUN reflection + public-IP probing + UPnP-IGD / NAT-PMP / PCP port mapping.
 - **Security** — mutual TLS with hot CRL revocation interception, built-in CA/PKI and certificate rotation.
+- **GeoIP-aware split tunneling** — userspace split tunnel with gVisor network stack + IPIP encapsulation proxy, routing traffic to designated exit nodes by GeoIP/CIDR rules with only 3.3% overlay overhead.
 - **Production-grade ops** — systemd install wizards, TUI admin consoles (Bubbletea), an SSH remote-deploy tool, and a `doctor` health check.
-- **Split tunnel / DNS / GeoIP** — userspace split tunneling, a built-in DNS proxy, GeoIP-aware routing, and subnet advertising (subnet routing).
 - **Multi-database** — GORM backends: SQLite (pure Go, zero CGO) / PostgreSQL / MySQL.
 - **Cross-platform** — prebuilt releases for Linux and macOS (amd64 / arm64).
 
@@ -175,7 +176,6 @@ Visit the [Releases](https://github.com/x6nux/corelink/releases) page, grab `cor
 | `corelink-node` | Unified node (production) |
 | `corelink` | Management CLI |
 | `corelink-deploy` | SSH remote-deploy orchestration tool (test-network ops only) |
-| `controller` / `agent` / `relay` | [Legacy] early-stage standalone binaries, superseded by the unified binaries; not recommended for changes |
 
 `corelink-controller` and `corelink-node` share a common ops subcommand set:
 
@@ -206,9 +206,7 @@ All other management operations (`node` / `acl` / `key` / `relay` / `cert` / `ca
 ```json
 {
   "DBDSN": "sqlite://corelink.db",
-  "GRPCEnrollAddr": ":7443",
-  "GRPCAddr": ":7444",
-  "HTTPAddr": ":8080",
+  "ListenAddr": ":7443",
   "VirtualCIDR": "100.64.0.0/10",
   "CASubject": "CoreLink Root CA",
   "TLSMode": "self-signed",
@@ -218,6 +216,7 @@ All other management operations (`node` / `acl` / `key` / `relay` / `cert` / `ca
 }
 ```
 
+- `ListenAddr` is the unified listen port (gRPC + HTTP + Admin share a single port with VerifyClientCertIfGiven). Legacy fields `GRPCEnrollAddr`/`GRPCAddr`/`HTTPAddr` are still accepted and auto-mapped to `ListenAddr`.
 - `DBDSN` accepts `sqlite://<path>` / `postgres://...` / `mysql://...`.
 - The CA encryption key is auto-generated on first launch and persisted to the DB (or provide one via the `CORELINK_CA_ENC_KEY` env var).
 
@@ -244,12 +243,9 @@ All other management operations (`node` / `acl` / `key` / `relay` / `cert` / `ca
 
 | Port | Purpose |
 |------|---------|
-| `:7443` | Enroll gRPC (outer TLS, no client cert required) |
-| `:7444` | Main gRPC (mTLS: Config / RelayControl / Ingress / Enroll) |
+| `:7443` | Controller unified port (gRPC + HTTP + Admin shared, VerifyClientCertIfGiven) |
 | `:7445` | STUN reflection UDP |
-| `:7446` | TRANSIT mesh interconnect fixed port (shared by relay server + interconnect) |
-| `:8080` | Node-facing HTTP (mTLS: config pull + watch + myip + snapshot + health) |
-| `127.0.0.1:8090` | Admin HTTP (Admin API + SPA; loopback-only by default) |
+| `:7447` | DataPlane TLS listener (node-to-node frame transport) |
 | Unix socket | `/var/run/corelink-controller.sock`, `/var/run/corelink-node.sock` (TUI RPC) |
 
 ---
@@ -285,7 +281,9 @@ The build output in `web/dist/` is embedded into the Go binary via `go:embed` an
 ### Tech Stack
 
 - **Language / runtime**: Go 1.26
-- **Data plane**: embedded `wireguard-go` fork, custom `conn.Bind`, TUN (real / fake)
+- **Data plane**: custom TLS framing (bufio batch write + channel consumer model), TUN device (real / fake)
+- **Autonomous routing**: ProbeRouter (L1 RTT probing + weighted scoring + auto failover)
+- **Smart split tunneling**: gVisor userspace network stack + IPIP encapsulation + GeoIP routing
 - **RPC**: gRPC + Protobuf (generated package alias `genv1`)
 - **Storage**: GORM (SQLite / PostgreSQL / MySQL)
 - **Terminal UI**: [Bubbletea](https://github.com/charmbracelet/bubbletea)
@@ -303,17 +301,16 @@ cmd/                 entry-point binaries
   corelink-node/         unified node (LEAF/TRANSIT role auto-switching)
   corelink/              management CLI (Cobra)
   corelink-deploy/       SSH remote-deploy tool
-  controller/ agent/ relay/   [legacy] early standalone binaries
 
 internal/
   controller/         controller side (admin/ca/config/configsvc/enroll/ingress/
                       ipam/relayroster/server/snapshot/store/topology/topoadapter/
                       topostore/acl/routepolicy)
-  nodecore/           node side (bind/config/dnsproxy/discovery/enroll/firewall/
-                      ingress/keystore/multirelay/portmap/probe/relayclient/snapstore/
-                      steward/sync/tun/wg)
-  relay/              relay transit (server/mesh/envelope/forward/session/...)
-  wireguard/          embedded wireguard-go fork
+  nodecore/           node side (dataplane/connpool/splittunnel/proberouter/
+                      config/dnsproxy/discovery/enroll/firewall/flowtrack/
+                      geoip/ingress/keystore/multirelay/portmap/probe/
+                      relayclient/snapstore/steward/sync/tun)
+  relay/              relay transit (server/mesh/forward/session/...)
   rpc/  tui/  pki/  featureflag/  version/  integration/
 
 pkg/
@@ -332,12 +329,13 @@ CoreLink is under active development. Core capabilities already landed:
 
 - ✅ Enrollment / CA / IPAM / ACL / config delivery
 - ✅ Topology optimization brain (K-path / DAG / FIB / incremental optimization)
-- ✅ VIP passthrough routing (FIB / ECMP / DAG / Bind / 0-RTT / sync.Pool)
-- ✅ Steward failover (election / coronation / probing / Tier-A service / handoff)
-- ✅ WG multi-relay data-plane rework
-- 🚧 End-to-end vipForward wiring and interruption-free role flips are still being polished
-
-> The legacy standalone `controller` / `agent` / `relay` binaries are early-stage artifacts superseded by the unified binaries; they still compile but are not recommended for modification.
+- ✅ Custom data plane fully landed (TLS framing / ConnPool / DataPlane Listener / relay forwarding)
+- ✅ VIP passthrough routing (FIB / ECMP / DAG / batch write / sync.Pool)
+- ✅ Probe-based autonomous routing (ProbeRouter / multi-dimensional probing / weighted scoring / route caching)
+- ✅ GeoIP-aware split tunneling (gVisor / IPIP encapsulation / TUN-layer DNS interception)
+- ✅ Performance optimization (bufio batch Flush + channel consumer TUN Write: 98% wire speed, 30% CPU)
+- 🚧 Steward failover (code ready, pending integration into corelink-node binary)
+- 🚧 Interruption-free role flips still being polished
 
 ---
 

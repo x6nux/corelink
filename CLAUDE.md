@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-CoreLink 是一个用 Go 编写的 overlay VPN / mesh networking 系统,类似 Tailscale/ZeroTier。它实现了完整的节点注册(enroll)、CA 证书管理、虚拟 IP 分配(IPAM)、ACL 策略、WireGuard 数据面、relay 中转、智能拓扑优化、故障自动转移(steward)等能力。
+CoreLink 是一个用 Go 编写的 overlay VPN / mesh networking 系统,类似 Tailscale/ZeroTier。它实现了完整的节点注册(enroll)、CA 证书管理、虚拟 IP 分配(IPAM)、ACL 策略、自研高性能数据面(98%线速)、relay 中转、智能拓扑优化、Probe 自治选路、GeoIP 智能分流等能力。
 
 **模块名**: `github.com/x6nux/corelink`
 **Go 版本**: 1.26.0
@@ -24,11 +24,8 @@ CoreLink 是一个用 Go 编写的 overlay VPN / mesh networking 系统,类似 T
 | `corelink-node` | `cmd/corelink-node/` | 统一节点(生产用,含 TUI/install/wizard 子命令) |
 | `corelink` | `cmd/corelink/` | 管理 CLI (Cobra 命令树) |
 | `corelink-deploy` | `cmd/corelink-deploy/` | SSH 远程部署编排工具 |
-| `controller` | `cmd/controller/` | 旧版精简控制器(早期阶段,无拓扑大脑) |
-| `agent` | `cmd/agent/` | 旧版独立 agent(早期阶段) |
-| `relay` | `cmd/relay/` | 旧版独立 relay(早期阶段) |
 
-> 生产使用 `corelink-controller` + `corelink-node`;旧版 `controller`/`agent`/`relay` 为早期阶段产物,已被合并二进制取代。
+> 生产使用 `corelink-controller` + `corelink-node`。
 
 ## 构建、测试与代码生成
 
@@ -38,7 +35,7 @@ go build ./cmd/corelink-controller
 go build ./cmd/corelink-node
 go build ./cmd/corelink
 
-# 测试
+# 测试（涉及 Go 代码变更时必须在提交前跑全量测试）
 make test                    # go test ./...
 make test-integration        # go test -tags=integration ./...
 
@@ -73,9 +70,6 @@ cmd/
   corelink-node/          # 统一节点入口(LEAF/TRANSIT 角色自动切换)
   corelink/               # 管理 CLI (Cobra: node/acl/key/relay/cert/ca/login/status/route/dns)
   corelink-deploy/        # SSH 远程部署工具
-  controller/             # [旧版] 精简控制器
-  agent/                  # [旧版] 独立 agent
-  relay/                  # [旧版] 独立 relay
 
 internal/
   controller/             # Controller 侧逻辑
@@ -97,12 +91,16 @@ internal/
     routepolicy/          #   路由策略(alias/route/DNS/子网发布)
 
   nodecore/               # 节点侧逻辑
-    bind/                 #   WireGuard Bind 实现(relay 中转/VIP 直通)
+    dataplane/            #   自研数据面(TLS帧传输/TUN读写/路由/中继转发)
+    connpool/             #   弹性连接池(多连接/质量排序/自动扩缩容)
+    splittunnel/          #   智能分流引擎(gVisor/IPIP封装/GeoIP/DNS拦截)
     config/               #   节点引导配置
     dnsproxy/             #   内置 DNS 代理
     discovery/            #   ARP/邻居发现
     enroll/               #   注册客户端(gRPC)
     firewall/             #   iptables/nftables 防火墙管理
+    flowtrack/            #   分段锁流追踪器(五元组/DPI/超时GC)
+    geoip/                #   GeoIP 匹配器(国家CIDR查表)
     ingress/              #   入口发现(STUN/UPnP/NAT-PMP/PCP/网卡枚举/公网查询)
     keystore/             #   节点密钥/证书本地存储
     multirelay/           #   多 relay 选择器(LEAF 用)
@@ -113,12 +111,10 @@ internal/
     steward/              #   Steward 决策层(选举/加冕/探活/A档服务)
     sync/                 #   配置同步客户端(gRPC+WS+HTTP 三通道 failover)
     tun/                  #   TUN 设备(真实/fake)
-    wg/                   #   WireGuard device 封装
 
   relay/                  # Relay 中转逻辑
     server/               #   接入监听(TLS/WS/gRPC 多协议合并/CRL 拦截)
     mesh/                 #   Relay 间 mesh 互联(Interconnect/SessionRouter/FIBRoute/Gossip/Snapshot)
-    envelope/             #   信封封装(已废弃,VIP 直通取代)
     forward/              #   转发逻辑
     session/              #   会话表
     ratelimit/            #   速率限制
@@ -129,7 +125,7 @@ internal/
     locationcache/        #   位置缓存
     wgrouter/             #   WG 路由
 
-  wireguard/              # 内嵌 wireguard-go(fork, 适配自定义 Bind/TUN)
+  transport/              # 帧传输层(Framer/bufio批量写/可复用读缓冲区)
   rpc/                    # Unix socket RPC(TUI <-> daemon 通信)
   tui/                    # Terminal UI(bubbletea, controller/node 两种视图)
   pki/                    # PKI 工具(CSR/CRL/CA/轮换)
@@ -163,12 +159,20 @@ web/                      # 管理面 React SPA(Vite + TypeScript)
 - 角色分配: TRANSIT(中转) / LEAF(叶子)
 - 结果持久化到 `topostore`,重启后 `Load()` 立即可服务
 
+### 数据面
+
+自研数据面（已替代 WireGuard）:
+- 自定义 TLS 帧传输协议(4B length-prefix + VIP 路由头 + payload)
+- 出站: TUN Read → FlowTracker → RouteEngine → ConnPool/PeerFramer → Framer.WritePacket → TLS Write
+- 入站: TLS Read → Framer.ReadPacket → channel → 单消费者批量 TUN Write
+- 中继转发: InjectInbound → TUN → kernel ip_forward → TUN Read → processOutbound → 转发到目标节点
+- 性能: bufio 批量 Flush + channel 消费者模型，实测 98% 物理线速(983 Mbps / 1 Gbps)，CPU 30%
+- 数据面监听端口: `:7447`(DataPlane Listener)
+
 ### VIP 路由模式
 
-已从信封模式(envelope)迁移到 VIP 直通路由:
-- Bind 通过 `DirectSend` 直投 interconnect(零拷贝)
-- FIB 表(`FIBTable`)由 controller 按拓扑计算并下发
-- FIBRoute 替代 SessionRouter 做路由查找
+FIB 表(`FIBTable`)由 controller 按拓扑计算并下发，节点侧 RouteEngine 做多层匹配(L5/L4/L3)
+ProbeRouter 自治选路: 周期探测 → 加权评分(throughput×0.6 + latency×0.4) → 动态调整最优路径
 
 ### Steward (故障转移)
 
@@ -178,12 +182,13 @@ TRANSIT 节点内置 steward 决策层:
 - 当选后自动起 A 档服务(降级的 config 下发)
 - Controller 恢复后通过 `/v1/steward-handoff` 还政
 
-### 数据面
+### 数据面（旧 WireGuard 已移除）
 
-- 数据面基于 WireGuard(内嵌 wireguard-go fork)
-- 自定义 `conn.Bind` 实现(`bind.Bind`)将 WG 流量经 relay 中转或 VIP 直通
+- 自研数据面: `internal/nodecore/dataplane/`（DataPlane 编排器 + DataPlane Listener）
+- 连接池: `internal/nodecore/connpool/`（弹性多连接 + 质量排序 + 自动扩缩容）
+- 帧传输: `internal/transport/`（Framer + bufio 批量写 + 可复用读缓冲区）
 - TUN 设备: 真实(`tun.CreateReal`)或 fake(`tun.CreateFake`,测试用)
-- 多 Bind 支持: `wg.NewMultiBind` 同时接入多个 relay
+- 智能分流: `internal/nodecore/splittunnel/`（gVisor + IPIP 封装 + GeoIP 路由）
 
 ## 数据库
 
@@ -197,12 +202,9 @@ TRANSIT 节点内置 steward 决策层:
 
 | 端口 | 用途 |
 |------|------|
-| `:7443` | Enroll gRPC(外层 TLS,无需客户端证书) |
-| `:7444` | 主业务 gRPC(mTLS: Config/RelayControl/Ingress/Enroll) |
+| `:7443` | Controller 统一端口(gRPC + HTTP + Admin 共享,VerifyClientCertIfGiven) |
 | `:7445` | STUN 反射 UDP |
-| `:7446` | TRANSIT mesh 互联固定端口(relay server + interconnect 共享) |
-| `:8080` | 节点面 HTTP(mTLS: config pull + watch + myip + snapshot + health) |
-| `127.0.0.1:8090` | 管理面 HTTP(Admin API + SPA,默认仅回环绑定) |
+| `:7447` | 数据面 TLS 监听(DataPlane Listener,节点间帧传输) |
 | Unix socket | `/var/run/corelink-controller.sock` 和 `/var/run/corelink-node.sock`(TUI RPC) |
 
 ## 配置文件
@@ -211,9 +213,7 @@ TRANSIT 节点内置 steward 决策层:
 ```json
 {
   "DBDSN": "sqlite://corelink.db",
-  "GRPCEnrollAddr": ":7443",
-  "GRPCAddr": ":7444",
-  "HTTPAddr": ":8080",
+  "ListenAddr": ":7443",
   "VirtualCIDR": "100.64.0.0/10",
   "CASubject": "CoreLink Root CA",
   "TLSMode": "self-signed",
@@ -261,6 +261,11 @@ TRANSIT 节点内置 steward 决策层:
 - 并发安全: 共享状态使用 `sync.Mutex` / `sync.RWMutex`,关键路径有详细的锁序注释
 - 优雅退出: context 取消 + signal 捕获 + 超时 shutdown
 
+## 提交规范
+
+- **所有涉及 Go 代码的变更,必须在提交前通过全量测试 `go test ./...`,未通过不允许提交**
+- 建议同时跑 `go vet ./...` 确认无静态分析问题
+
 ## 运维规范
 
 - **测试网操作禁止使用 SSH**,统一通过 `cmd/corelink-deploy` 工具进行部署和管理
@@ -272,6 +277,5 @@ TRANSIT 节点内置 steward 决策层:
 - 修改前端后需在 `web/` 目录运行 `npm run build` 重新生成嵌入资源
 - 新增持久化模型后需在 `internal/controller/store/migrate.go` 的 `Migrate()` 中注册
 - 拓扑相关代码避免直接 import `topostore`/`configsvc`,通过接口解耦
-- 测试 TUN/WireGuard 相关代码时注入 `tun.CreateFake`,不需要 root
+- 测试 TUN 相关代码时注入 `tun.CreateFake`,不需要 root
 - `cmd/corelink-controller` 和 `cmd/corelink-node` 是主入口,关注装配(wiring)逻辑
-- 老版本二进制(`cmd/controller`/`cmd/agent`/`cmd/relay`)仍可编译但不建议修改

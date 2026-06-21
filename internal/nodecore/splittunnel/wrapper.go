@@ -124,6 +124,16 @@ func (w *SplitTunWrapper) Read(bufs [][]byte, sizes []int, offset int) (int, err
 	// 先取 gstack 快照再检查 active，避免 Cleanup 并发置 nil 导致的 panic。
 	gs := w.loadGStack()
 	if !w.active.Load() || gs == nil {
+		// 记录分流未激活时的 ICMP 包（诊断用）
+		for j := 0; j < n; j++ {
+			if sizes[j] >= 20 {
+				p := bufs[j][offset : offset+sizes[j]]
+				if p[9] == 1 { // ICMP
+					dstDiag := netip.AddrFrom4([4]byte{p[16], p[17], p[18], p[19]})
+					slog.Info("splittunnel: ICMP 未分流（引擎未激活）", "dst", dstDiag, "active", w.active.Load(), "gs", gs != nil)
+				}
+			}
+		}
 		return n, nil
 	}
 	for i := 0; i < n; i++ {
@@ -138,6 +148,11 @@ func (w *SplitTunWrapper) Read(bufs [][]byte, sizes []int, offset int) (int, err
 		// VIP 网段包始终走数据面，分流引擎不截获。
 		if vipPrefix.Contains(dstIP) {
 			continue
+		}
+
+		// ICMP 分流诊断
+		if pkt[9] == 1 {
+			slog.Info("splittunnel: ICMP 进入分流决策", "dst", dstIP, "src", parseSrcIPv4(pkt))
 		}
 
 		// DNS 拦截：dst port 53（UDP/TCP）透明转发到出口节点解析（防 DNS 污染）
@@ -167,6 +182,7 @@ func (w *SplitTunWrapper) Read(bufs [][]byte, sizes []int, offset int) (int, err
 		case ActionDirect:
 			proto := pkt[9]
 			if proto == 1 {
+				slog.Info("splittunnel: ICMP ActionDirect → HandleICMP", "dst", dstIP)
 				gs.HandleICMP(pkt)
 			} else {
 				gs.InjectPacket(pkt)
@@ -179,12 +195,17 @@ func (w *SplitTunWrapper) Read(bufs [][]byte, sizes []int, offset int) (int, err
 			if !vcfg.localVIP.IsValid() || !vcfg.exitVIP.IsValid() {
 				continue
 			}
+			proto := pkt[9]
 			encapped := encapProxy(vcfg.localVIP, vcfg.exitVIP, pkt)
 			if len(encapped) > len(bufs[i])-offset {
+				slog.Warn("splittunnel: encapProxy 缓冲区不足", "dst", dstIP, "proto", proto, "encLen", len(encapped), "bufCap", len(bufs[i])-offset)
 				continue
 			}
 			copy(bufs[i][offset:], encapped)
 			sizes[i] = len(encapped)
+			if proto == 1 {
+				slog.Info("splittunnel: ICMP 已封装为 proxy", "dst", dstIP, "exit", vcfg.exitVIP, "encLen", len(encapped))
+			}
 		}
 	}
 	return n, nil

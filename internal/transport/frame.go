@@ -72,6 +72,7 @@ var framePool = sync.Pool{
 	},
 }
 
+
 // vipBytes 返回 VIP 的原始字节（4B 或 16B）和对应的 flags 位。
 func vipBytes(addr netip.Addr) ([]byte, byte) {
 	if !addr.IsValid() {
@@ -188,7 +189,8 @@ func ReadStreamFrame(r io.Reader) (dstVIP netip.Addr, dstRelay uint16, ttl uint8
 }
 
 // readStreamFrameRaw 读取 stream 帧并额外返回 flags 字节（内部使用）。
-func readStreamFrameRaw(br *bufio.Reader) (dstVIP netip.Addr, dstRelay uint16, ttl uint8, payload []byte, flags byte, err error) {
+// reuseBuf 非空时复用该缓冲区（避免每帧 make），返回的 payload 是 reuseBuf 的切片。
+func readStreamFrameRaw(br *bufio.Reader, reuseBuf *[]byte) (dstVIP netip.Addr, dstRelay uint16, ttl uint8, payload []byte, flags byte, err error) {
 	var lenBuf [streamLenSize]byte
 	if _, err = io.ReadFull(br, lenBuf[:]); err != nil {
 		return netip.Addr{}, 0, 0, nil, 0, fmt.Errorf("transport: 读长度前缀: %w", err)
@@ -200,7 +202,15 @@ func readStreamFrameRaw(br *bufio.Reader) (dstVIP netip.Addr, dstRelay uint16, t
 	if n < fixedHdrSize+vipV4Size {
 		return netip.Addr{}, 0, 0, nil, 0, fmt.Errorf("transport: 帧过短 %d", n)
 	}
-	frame := make([]byte, n)
+	var frame []byte
+	if reuseBuf != nil && cap(*reuseBuf) >= n {
+		frame = (*reuseBuf)[:n]
+	} else {
+		frame = make([]byte, n)
+		if reuseBuf != nil {
+			*reuseBuf = frame
+		}
+	}
 	if _, err = io.ReadFull(br, frame); err != nil {
 		return netip.Addr{}, 0, 0, nil, 0, fmt.Errorf("transport: 读帧体: %w", err)
 	}

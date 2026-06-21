@@ -623,7 +623,10 @@ func (c *controllerComponents) serve() error {
 	defer shutCancel()
 
 	c.cfgSvcs.Notify.Close()
-	grpcSrv.GracefulStop()
+	// 统一端口模式下 gRPC 作为 HTTP handler 使用（ServeHTTP），其 transport
+	// 是 serverHandlerTransport，不实现 Drain()。GracefulStop 会触发 panic。
+	// 改用 Stop() + httpSrv.Shutdown 实现优雅退出。
+	grpcSrv.Stop()
 	_ = httpSrv.Shutdown(shutCtx)
 	if c.stun != nil {
 		_ = c.stun.Close()

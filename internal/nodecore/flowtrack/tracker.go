@@ -83,6 +83,7 @@ func (t *Tracker) Track(pkt []byte) (*Flow, bool) {
 	h := key.Hash()
 	idx := int(h % uint64(len(t.shards)))
 	s := &t.shards[idx]
+	now := time.Now() // 锁外调用，避免持锁期间 vDSO syscall
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -90,7 +91,7 @@ func (t *Tracker) Track(pkt []byte) (*Flow, bool) {
 	// 查找现有流
 	if f, ok := s.flows[key]; ok {
 		f.mu.Lock()
-		f.LastSeen = time.Now()
+		f.LastSeen = now
 		f.Bytes += uint64(len(pkt))
 		f.Packets++
 		f.mu.Unlock()
@@ -102,8 +103,7 @@ func (t *Tracker) Track(pkt []byte) (*Flow, bool) {
 		return nil, false
 	}
 
-	// 创建新流
-	now := time.Now()
+	// 创建新流（now 已在锁外获取）
 	f := &Flow{
 		Key:       key,
 		State:     FlowNew,

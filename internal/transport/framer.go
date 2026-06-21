@@ -31,6 +31,7 @@ type Framer struct {
 	// stream 模式字段
 	conn net.Conn
 	br   *bufio.Reader
+	bw   *bufio.Writer
 
 	// datagram 模式字段
 	pc   net.PacketConn
@@ -38,6 +39,9 @@ type Framer struct {
 
 	// writeMu 串行化写入，防止并发 Write 交错破坏帧边界。
 	writeMu sync.Mutex
+
+	// readBuf 可复用读帧缓冲区（串行读取，无并发）
+	readBuf []byte
 
 	// keepalive 状态
 	kaMu         sync.Mutex
@@ -60,6 +64,7 @@ func NewStreamFramer(conn net.Conn) *Framer {
 		mode:      modeStream,
 		conn:      conn,
 		br:        bufio.NewReader(conn),
+		bw:        bufio.NewWriterSize(conn, 65536),
 		kaPending: make(map[uint64]time.Time),
 	}
 }
@@ -74,18 +79,25 @@ func NewDatagramFramer(pc net.PacketConn, addr net.Addr) *Framer {
 	}
 }
 
-// WritePacket 将一个数据包帧化后写入底层连接。
-// 并发安全（内部 writeMu 串行化）。
+// WritePacket 将一个数据包帧化后写入底层连接并立即 Flush。
+// 并发安全（内部 writeMu 串行化）。batch 路径请用 WritePacketBatch + FlushBatch。
 func (f *Framer) WritePacket(dstVIP netip.Addr, dstRelay uint16, ttl uint8, payload []byte) error {
 	f.writeMu.Lock()
 	defer f.writeMu.Unlock()
+	if err := f.writePacketLocked(dstVIP, dstRelay, ttl, payload); err != nil {
+		return err
+	}
+	return f.flushLocked()
+}
 
+// writePacketLocked 是 WritePacket 的无锁版本，调用方必须持有 writeMu。
+func (f *Framer) writePacketLocked(dstVIP netip.Addr, dstRelay uint16, ttl uint8, payload []byte) error {
 	switch f.mode {
 	case modeStream:
 		if f.conn == nil {
 			return fmt.Errorf("transport: stream 连接已关闭")
 		}
-		return WriteStreamFrame(f.conn, dstVIP, dstRelay, ttl, payload)
+		return WriteStreamFrame(f.bw, dstVIP, dstRelay, ttl, payload)
 	case modeDatagram:
 		if f.pc == nil {
 			return fmt.Errorf("transport: datagram 连接已关闭")
@@ -108,7 +120,7 @@ func (f *Framer) ReadPacket() (dstVIP netip.Addr, dstRelay uint16, ttl uint8, pa
 			if f.conn == nil {
 				return netip.Addr{}, 0, 0, nil, fmt.Errorf("transport: stream 连接已关闭")
 			}
-			dstVIP, dstRelay, ttl, payload, frameFlags, err = readStreamFrameRaw(f.br)
+			dstVIP, dstRelay, ttl, payload, frameFlags, err = readStreamFrameRaw(f.br, &f.readBuf)
 		case modeDatagram:
 			if f.pc == nil {
 				return netip.Addr{}, 0, 0, nil, fmt.Errorf("transport: datagram 连接已关闭")
@@ -199,7 +211,11 @@ func (f *Framer) WriteKeepalive(seq uint64) error {
 	f.kaPending[seq] = time.Now()
 	f.kaMu.Unlock()
 
-	return WriteStreamKeepalive(f.conn, seq)
+	err := WriteStreamKeepalive(f.bw, seq)
+	if err == nil {
+		err = f.bw.Flush() // keepalive 立即发送
+	}
+	return err
 }
 
 // WriteKeepaliveEcho 回复 keepalive echo（内部自动调用，对端收到后测 RTT）。
@@ -210,7 +226,11 @@ func (f *Framer) WriteKeepaliveEcho(seq uint64) error {
 	if f.conn == nil {
 		return fmt.Errorf("transport: stream 连接已关闭")
 	}
-	return WriteStreamKeepaliveEcho(f.conn, seq)
+	err := WriteStreamKeepaliveEcho(f.bw, seq)
+	if err == nil {
+		err = f.bw.Flush()
+	}
+	return err
 }
 
 // WriteDNS 发送 DNS 帧（原始 DNS 报文封装为 FlagDNS 帧）。
@@ -220,7 +240,11 @@ func (f *Framer) WriteDNS(dstVIP netip.Addr, dnsPayload []byte) error {
 	if f.mode != modeStream || f.conn == nil {
 		return fmt.Errorf("transport: DNS 帧仅支持 stream 模式")
 	}
-	return WriteStreamDNS(f.conn, dstVIP, dnsPayload)
+	err := WriteStreamDNS(f.bw, dstVIP, dnsPayload)
+	if err == nil {
+		err = f.bw.Flush() // DNS 帧立即发送
+	}
+	return err
 }
 
 // WriteProbe 发送 Probe 帧（路径探测，带 FlagProbe 标记和预存路由）。
@@ -231,7 +255,41 @@ func (f *Framer) WriteProbe(p *ProbeFrame, dstVIP netip.Addr) error {
 	if f.mode != modeStream || f.conn == nil {
 		return fmt.Errorf("transport: Probe 帧仅支持 stream 模式")
 	}
-	return WriteProbeFrame(f.conn, p, dstVIP)
+	// Probe 帧立即发送（低频控制消息）
+	err := WriteProbeFrame(f.bw, p, dstVIP)
+	if err == nil {
+		err = f.bw.Flush()
+	}
+	return err
+}
+
+// Flush 刷新写缓冲区（将攒的帧批量写出）。
+func (f *Framer) Flush() error {
+	f.writeMu.Lock()
+	defer f.writeMu.Unlock()
+	return f.flushLocked()
+}
+
+func (f *Framer) flushLocked() error {
+	if f.bw != nil {
+		return f.bw.Flush()
+	}
+	return nil
+}
+
+// LockWrite / UnlockWrite 暴露写锁给 batch 路径。
+// 调用方在 LockWrite 和 UnlockWrite 之间可用 WritePacketBatch + FlushBatch 批量写。
+func (f *Framer) LockWrite()   { f.writeMu.Lock() }
+func (f *Framer) UnlockWrite() { f.writeMu.Unlock() }
+
+// WritePacketBatch 无锁写帧（调用方必须已调 LockWrite）。
+func (f *Framer) WritePacketBatch(dstVIP netip.Addr, dstRelay uint16, ttl uint8, payload []byte) error {
+	return f.writePacketLocked(dstVIP, dstRelay, ttl, payload)
+}
+
+// FlushBatch 无锁 Flush（调用方必须已调 LockWrite）。
+func (f *Framer) FlushBatch() error {
+	return f.flushLocked()
 }
 
 // Close 关闭底层连接。
@@ -243,6 +301,9 @@ func (f *Framer) Close() error {
 	case modeStream:
 		if f.conn == nil {
 			return nil
+		}
+		if f.bw != nil {
+			_ = f.bw.Flush()
 		}
 		err := f.conn.Close()
 		f.conn = nil
